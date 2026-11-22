@@ -72,9 +72,11 @@ describe("CHD v4 loader", () => {
     hunk1.set(pattern, 100);
     const deflated = deflateSync(hunk1); // Bun/node zlib: raw deflate without wrapper here
 
+    // map = 2 entries + EndOfListCookie = 48 bytes; hunks start after it
+    const dataStart = V4_HEADER + 3 * MAP_ENTRY;
     const map = bytes(
-      map4Entry(V4_HEADER + 2 * MAP_ENTRY, HUNK, 2), // stored
-      map4Entry(V4_HEADER + 2 * MAP_ENTRY + HUNK, deflated.length, 1), // compressed
+      map4Entry(dataStart, HUNK, 2), // stored
+      map4Entry(dataStart + HUNK, deflated.length, 1), // compressed
       END_COOKIE,
     );
     const chd = bytes(chd4Header(2, HUNK * 2, 1), map, hunk0, deflated);
@@ -111,8 +113,9 @@ describe("CHD v4 loader", () => {
 
   test("self-reference resolves to the target hunk", async () => {
     const hunk0 = new Uint8Array(HUNK).map((_, i) => (i * 3) & 0xff);
+    const dataStart = V4_HEADER + 3 * MAP_ENTRY;
     const map = bytes(
-      map4Entry(V4_HEADER + MAP_ENTRY, HUNK, 2), // hunk 0 stored
+      map4Entry(dataStart, HUNK, 2), // hunk 0 stored
       map4Entry(0, 0, 4), // hunk 1 -> self ref to hunk 0
       END_COOKIE,
     );
@@ -123,7 +126,8 @@ describe("CHD v4 loader", () => {
   });
 
   test("out-of-range hunk throws", async () => {
-    const map = bytes(map4Entry(V4_HEADER + MAP_ENTRY, HUNK, 2), END_COOKIE);
+    const dataStart = V4_HEADER + 2 * MAP_ENTRY;
+    const map = bytes(map4Entry(dataStart, HUNK, 2), END_COOKIE);
     const chd = bytes(chd4Header(1, HUNK, 0), map, new Uint8Array(HUNK));
     const parsed = await parseChd(chd);
     expect(parsed).toBeDefined();

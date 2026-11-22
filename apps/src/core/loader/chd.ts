@@ -46,7 +46,7 @@ interface MapEntry {
 }
 
 async function inflateRaw(raw: Uint8Array, expected: number): Promise<Uint8Array> {
-  const stream = new Blob([raw]).stream().pipeThrough(new DecompressionStream("deflate-raw"));
+  const stream = new Blob([raw as BlobPart]).stream().pipeThrough(new DecompressionStream("deflate-raw"));
   const out = new Uint8Array(await new Response(stream).arrayBuffer());
   if (out.byteLength !== expected) {
     throw new Error(`CHD hunk inflate: got ${out.byteLength} bytes, want ${expected}`);
