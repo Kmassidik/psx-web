@@ -20,6 +20,8 @@ import { Gpu, VRAM_W, VRAM_H } from "./gpu";
 import { Rcnt } from "./rcnt";
 import { GTE } from "./gte";
 import { Dma } from "./dma";
+import { Cdrom } from "./cdrom";
+import { Spu } from "./spu";
 
 export class Machine {
   readonly mem = new Memory();
@@ -40,10 +42,16 @@ export class Machine {
   readonly cpu: Cpu;
   /** 7-channel DMA controller (ch0 MDECin … ch6 OTC), DmaUnit delivery. */
   readonly dma = new Dma();
+  /** CDROM controller (1F801800-1F801803 + IRQ line 2), CdromUnit delivery. */
+  readonly cdrom = new Cdrom();
+  /** SPU (1F801C00+ u16 regs, IRQ line 9), SpuUnit delivery. */
+  readonly spu = new Spu();
 
   constructor() {
     this.rcnt.irqFire = (line) => { this.raiseIrq(1 << line); };
     this.dma.raiseIrq = () => { this.raiseIrq(IRQ_DMA); };
+    this.cdrom.irqFire = () => { this.raiseIrq(IRQ_CDROM); };
+    this.spu.irqFire = () => { this.raiseIrq(IRQ_SPU); };
     this.cpu = new Cpu(this.mem, this.rcnt, this.gte, {
       read32: (va) => this.portRead(va),
       write32: (va, v) => this.portWrite(va, v),
@@ -79,6 +87,16 @@ export class Machine {
           const off = va - 0x1f80_1080 - ch * 12;
           if (ch < 7 && off % 4 === 0 && off < 12) return this.dma.regs[ch * 3 + off / 4]! | 0;
         }
+        // CDROM 0x1F801800-0x1F801803 (byte regs; 32-bit read = replicated).
+        if (va >= 0x1f80_1800 && va <= 0x1f80_1803) {
+          const b = this.cdrom.read(va - 0x1f80_1800);
+          return (b | (b << 8) | (b << 16) | (b << 24)) >>> 0;
+        }
+        // SPU 0x1F801C00-0x1F801DFF (u16 regs; word read = lo|hi<<16).
+        if (va >= 0x1f80_1c00 && va <= 0x1f80_1dff) {
+          const off = (va - 0x1f80_1c00) >> 1;
+          return (this.spu.regs[off]! | (this.spu.regs[off + 1]! << 16)) >>> 0;
+        }
         return undefined;
       }
     }
@@ -102,6 +120,17 @@ export class Machine {
             return true;
           }
         }
+        // CDROM byte regs 0x1F801800-0x1F801803.
+        if (va >= 0x1f80_1800 && va <= 0x1f80_1803) {
+          this.cdrom.write(va - 0x1f80_1800, v & 0xff);
+          return true;
+        }
+        // SPU u16 regs 0x1F801C00-0x1F801DFF.
+        if (va >= 0x1f80_1c00 && va <= 0x1f80_1dff) {
+          const off = (va - 0x1f80_1c00) >> 1;
+          this.spu.regs[off] = v & 0xffff;
+          return true;
+        }
         return false;
       }
     }
@@ -112,10 +141,12 @@ export class Machine {
     this.dma.run(this.dmaBus);
   }
 
-  /** Run up to n CPU instructions with DMA/rcnt service per slice. */
+  /** Run up to n CPU instructions with DMA/CDROM/SPU/rcnt service per slice. */
   runSlice(n: number): boolean {
     const ok = this.cpu.run(n);
     this.runDma();
+    this.cdrom.exec(); // one interrupt-bucket per slice (timing: see cdrom.ts)
+    this.spu.tick(n); // SPU clock = cpu cycles / 768 internally
     // rcnt ticks on the same clock; slice granularity is fine for Phase 1
     return ok;
   }
