@@ -18,8 +18,8 @@
 
 /** CHCR bit 24: start/busy. Cleared by run() when the transfer completes. */
 const CHCR_START = 0x0100_0000;
-/** CHCR bit 0: direction (0 = to RAM, 1 = from RAM). */
-const CHCR_FROM_RAM = 0x0000_0001;
+/** CHCR bit 0: direction (1 = to RAM, 0 = from RAM) — contract convention. */
+const CHCR_TO_RAM = 0x0000_0001;
 /** CHCR bit 4: address step (0 = +4, 1 = -4). */
 const CHCR_STEP_DEC = 0x0000_0010;
 /** CHCR bits 9-10: sync mode (0 burst, 1 block, 2 linked-list). */
@@ -91,7 +91,7 @@ export class Dma {
   writeDicr(v: number): void {
     this.dicr &= ~(v & DICR_STAT);
     this.dicr = (this.dicr & ~DICR_ENABLE) | (v & DICR_ENABLE);
-    this.dicr = (this.dicr & ~DICR_MASTER_ENABLE) | (v & DICR_MASTER_ENABLE);
+    this.dicr |= v & DICR_MASTER_ENABLE; // master enable: write-1-set, sticky
     this.dicr = (this.dicr & ~DICR_FORCE) | (v & DICR_FORCE);
     this.updateIrq();
   }
@@ -116,7 +116,7 @@ export class Dma {
     const blocks = ((ctrl >>> CHCR_SYNC_SHIFT) & 3) === 1 ? bcr >>> 16 : 1;
     const total = words * (blocks === 0 ? 1 : blocks);
     const step = (ctrl & CHCR_STEP_DEC) !== 0 ? -4 : 4;
-    const toRam = (ctrl & CHCR_FROM_RAM) === 0;
+    const toRam = (ctrl & CHCR_TO_RAM) !== 0;
     let addr = this.regs[ch * 3]! & RAM_ADDR_MASK;
     for (let i = 0; i < total; i++) {
       if (toRam) {
