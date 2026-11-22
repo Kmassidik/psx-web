@@ -98,6 +98,15 @@ export class Memory {
       default: return 0;
     }
   }
+  store8(va: number, v: number): void {
+    const { region, phys } = translate(va);
+    switch (region) {
+      case Region.Ram: this.ram[phys] = v & 0xff; return;
+      case Region.Scratchpad: this.scratchpad[phys] = v & 0xff; return;
+      case Region.Parallel: this.parallel[phys] = v & 0xff; return;
+      default: return;
+    }
+  }
   store32(va: number, v: number): void {
     const { region, phys } = translate(va);
     switch (region) {
