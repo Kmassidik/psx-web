@@ -1,14 +1,71 @@
-# psx-web (working title)
+# psx-web
 
-PlayStation-1 emulator for the browser. Built from scratch (React + TypeScript,
-Bun toolchain). No emulator repository reused; behavioral spec derived from a
-reverse-engineering pass of a shipped PS1 emulator binary (see knowledge-base/).
+PlayStation-1 emulator for the browser, built from scratch in TypeScript.
+Bun toolchain, React UI, zero server-side emulation — the browser is the engine.
 
-- Browser is the engine: all emulation runs client-side (TS interpreter now,
-  WASM dynarec tier later). Server = static files only.
-- User supplies BIOS/ROM at runtime; nothing copyrighted is hosted here.
-- Low-RAM design: emulator state in preallocated ArrayBuffers mirroring the
-  reference binary's fixed memory layout; React never touches per-frame data.
+## Status
 
-Layout: apps/ (React-TS player) · knowledge-base/ (RE evidence, build plan,
-extracted UI blueprint) · assets/ (branding placeholder).
+| Subsystem | State | Tests |
+|---|---|---|
+| Memory map (full 4 GiB translation) | done | exhaustive 65,536-page |
+| CPU interpreter (MIPS R3000A user ISA) | done | ISA conformance vs independent models |
+| GTE (geometry coprocessor) | done | RTPS vectors, RTPT≡3×RTPS 10k, UNR divide |
+| GPU (VRAM, GP0, fill, polygons, CLUT tex, blends) | done | golden vectors + OOB property |
+| CDROM controller (command/INT chain) | done | 23 tests |
+| DMA (7 channels, linked-list, OTC) | done | 20 tests |
+| SPU (24 voices, ADPCM, gauss, ADSR) | done | 27 tests |
+| MDEC (macroblock decoder) | in progress | 34/41 |
+| Disc loaders (CUE/BIN, ISO, CHD v4/v5, PBP) | done | 34 tests |
+| Dynarec (WASM tier) | in progress | parity suite |
+| UI (React, ePSXe-blueprint dialogs) | done | compile gate |
+
+Boot proof: a hand-assembled PS-X EXE uploaded in the browser runs the full
+pipeline (loader → CPU → bus → GPU → canvas) — `rgb(0,255,0)` verified on-screen.
+
+## Layout
+
+```
+apps/
+  src/core/      emulator core (pure TS, no DOM): memory, cpu, gte, gpu,
+                 gpu-raster, cdrom, dma, spu, spu-voice, mdec*, rcnt,
+                 machine (bus glue), syscall (HLE shield), hello-exe
+  src/core/loader/  psexe, disc (cue/iso), chd, pbp
+  src/core/dynarec/ WASM tier (in progress)
+  src/ui/        React shell + dialogs cloned from the extracted ePSXe GTK UI
+  src/dev/       Bun.serve dev server (no extra packages)
+  tests/         bun test suites (see counts above)
+knowledge-base/  RE evidence from the reference binary, build plan, extracted
+                 598-widget GTK UI blueprint, session notes
+assets/          branding placeholder
+```
+
+## Run
+
+```sh
+cd apps
+bun install
+bun test        # full suite
+bun run dev     # http://localhost:5173 — drop a PS-X EXE (or bios.bin)
+```
+
+## Legal
+
+No BIOS, game ROMs, or other copyrighted data is hosted here. The user supplies
+their own BIOS dump and disc images at runtime; nothing is uploaded — all
+emulation is client-side.
+
+## Design provenance
+
+No emulator source is copied. Behavioral spec was derived by reverse-engineering
+a shipped PS1 emulator binary (see `knowledge-base/BINARY-RE-MAP.md` — function
+map, decompiled boot pipeline, memory layout, LWL/LWR byte-exact semantics,
+UNR division algorithm) plus the no$psx documentation. Each subsystem cites the
+function or spec section it mirrors; uncertain corners are marked UNVERIFIED in
+code comments and pinned by tests where possible.
+
+## Verification philosophy
+
+Formal-first: exhaustive enumerable spaces (full memory map), independent-model
+cross-checks (BigInt arithmetic, fixed-point GTE model), golden vectors (GPU
+pixels), determinism/snapshot-replay properties, and real-browser e2e. CI gates
+every push (`bun test` + strict `tsc`).
