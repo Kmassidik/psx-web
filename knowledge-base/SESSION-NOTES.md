@@ -23,3 +23,29 @@
 
 ## Final tally at last green run
 237 tests / 0 failures / 19 files, strict tsc clean, CI passing.
+
+## Final session results (Nortis milestone)
+
+**Nortis (MIT Tetris clone) boots BIOS-free and runs real game code.**
+
+Boot chain proven end-to-end:
+1. PS-X EXE extracted from MODE2/2352 disc (sector 24, user offset 0)
+2. loadExe → installHleVectors (A0/B0/C0 SYSCALL trampolines) → crt0 reg init
+3. CPU runs crt0: BLTZ preamble, gfx/pad init via A/B calls, main()
+4. VBLANK IRQ at ~60Hz drives VSync wait
+5. Game reaches B_open disc-I/O call (font/texture file) and loops
+   retrying — needs BIOS FS emulation over CDROM (Phase-3.5)
+
+Key bugs found and fixed by formal verification:
+- JR/JALR skipped the delay slot (interpreter)
+- LW/SW load-delay was broken at block boundaries in the dynarec
+- LW stray stack arg corrupted the wasm stack
+- Unaligned LW/SW: BIOS handler emulates byte-wise, doesn't trap-and-halt
+- CACHE op (0x27) = NOP on PS1
+- Stub LUI table encoding → ADDIU
+- Exception vector NOP-slide → return-past-EPC when no handler
+
+## Honest limits
+- Nortis reaches B_open and loops — BIOS FS over CDROM = next session
+- Retail games need CDROM timing precision + DMA handshake
+- GPU/SPU visually unverified for Nortis (B_open gates the graphics)
