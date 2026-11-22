@@ -122,7 +122,15 @@ export class Machine {
         }
         // CDROM byte regs 0x1F801800-0x1F801803.
         if (va >= 0x1f80_1800 && va <= 0x1f80_1803) {
-          this.cdrom.write(va - 0x1f80_1800, v & 0xff);
+          const off = va - 0x1f80_1800;
+          if (off === 3) {
+            // 1F801803: index-select bits 0-1 via port 0, ack via port 3
+            // when current index is 1 (no$psx: INT acknowledge write).
+            if ((this.cdrom.regs[0]! & 3) === 1) this.cdrom.ack(v & 0xff);
+            this.cdrom.write(3, v & 0xff);
+            return true;
+          }
+          this.cdrom.write(off, v & 0xff);
           return true;
         }
         // SPU u16 regs 0x1F801C00-0x1F801DFF.
