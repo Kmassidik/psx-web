@@ -1,3 +1,5 @@
+import { rasterize, PrimVert } from "./gpu-raster";
+
 /**
  * GPU — Phase 1 stub: VRAM + the GP0 commands a PS-X EXE needs to show
  * pixels (FillVRAM 0x02, CPU→VRAM image load 0xA0/0xC0) + GP1 display config.
@@ -19,6 +21,9 @@ export class Gpu {
   private cmdLeft = 0;
   /** Accumulated words for the polygon currently being decoded. */
   private primWords: number[] = [];
+  /** Texture state from the first vertex of textured prims. */
+  private texPage = 0;
+  private clutBase = 0;
   private imgX = 0; private imgY = 0; private imgW = 0; private imgH = 0;
   private imgCur = 0;
   private fillX = 0; private fillY = 0; private fillW = 0; private fillH = 0;
@@ -43,15 +48,18 @@ export class Gpu {
       case 0x01: this.cmdWords = []; break; // clear cache: no-op
       default:
         if ((top & 0xe0) === 0x20 || (top & 0xe0) === 0x30) {
-          // Polygons 20h..3Fh: decode expected total words.
+          // Polygons 20h..3Fh: decode expected total words (no$psx).
           const quad = (top & 0x08) !== 0; // bit3: 0=tri 1=quad
           const textured = (top & 0x04) !== 0; // bit2
+          const gouraud = (top & 0x10) !== 0; // bit4
           const nVert = quad ? 4 : 3;
-          const colorWords = quad ? 4 : 3; // first vertex color word only for flat
-          // words = colors + vertices(+texcache per vertex when textured)
-          const total = colorWords + nVert + (textured ? nVert : 0);
+          // no$psx word layout: vertex-0 color rides in the command word
+          // (flat AND gouraud); gouraud appends nVert-1 color words, each
+          // AFTER its position word.
+          const colorWords = gouraud ? nVert - 1 : 0;
+          const total = 1 + nVert + colorWords + (textured ? nVert : 0);
           this.primWords = [w];
-          this.cmdLeft = total - 1; // opcode word already counted
+          this.cmdLeft = total - 1;
         } else {
           this.cmdWords = []; break;
         }
@@ -89,13 +97,64 @@ export class Gpu {
       }
       case 0xc0: this.cmdWords.push(w); this.cmdLeft--; break;
       default:
-        // Polygon in progress: accumulate words, dispatch when complete.
+        // Polygon in progress: accumulate words, rasterize when complete.
         this.primWords.push(w);
         if (--this.cmdLeft === 0 && this.primWords.length > 0) {
-          void this.primWords; // rasterize(primWords) wired when RasterUnit lands
+          this.rasterizePrim(this.primWords);
         }
         break;
     }
+  }
+
+  /** Decode accumulated GP0 polygon words → Prim → rasterize into VRAM. */
+  private rasterizePrim(words: number[]): void {
+    const op = words[0]!;
+    const top = (op >>> 24) & 0xff;
+    const quad = (top & 0x08) !== 0;
+    const textured = (top & 0x04) !== 0;
+    const semiTrans = (top & 0x02) !== 0;
+    const gouraud = (top & 0x10) !== 0;
+    const n = quad ? 4 : 3;
+    const verts: PrimVert[] = [];
+    let wi = 1;
+    for (let i = 0; i < n; i++) {
+      // Color source: flat → command word (bits 0-23). Gouraud → vertex 0
+      // rides in the command word; vertices 1..n-1 read the preceding word
+      // (each position word is followed by its color word).
+      const colorWord = gouraud && i > 0 ? words[wi++]! : words[0]!;
+      const posWord = words[wi++]!;
+      let u = 0, v = 0;
+      if (textured) {
+        const texWord = words[wi++]!;
+        u = texWord & 0xff;
+        v = (texWord >>> 8) & 0xff;
+        if (i === 0) {
+          // clut base + texpage from the first texword
+          this.clutBase = ((texWord >>> 16) & 0xffff) * 16;
+          this.texPage = ((texWord >>> 24) & 0x1f) | (op >>> 0); // mode bits from op handled below
+        }
+      }
+      verts.push({
+        x: (posWord & 0xffff) << 16 >> 16,
+        y: (posWord >>> 16) << 16 >> 16,
+        r: (colorWord >>> 0) & 0xff,
+        g: (colorWord >>> 8) & 0xff,
+        b: (colorWord >>> 16) & 0xff,
+        u, v,
+      });
+    }
+    rasterize(this, {
+      kind: quad ? "quad" : "tri",
+      vertices: verts,
+      colorMode: gouraud ? "gouraud" : "flat",
+      textured,
+      blendMode: 0,
+      texPage: this.texPage,
+      clutBase: this.clutBase,
+      dither: false,
+      semiTrans,
+    });
+    this.primWords = [];
   }
 
   private pushImageWord(w: number): void {
