@@ -28,6 +28,15 @@ export function MainWindow() {
   const boot = useCallback((buf: ArrayBuffer, name: string) => {
     try {
       const bytes = new Uint8Array(buf);
+      // BIOS dump (512 KiB) vs PS-EXE: size discriminator (load_bios spec).
+      if (bytes.byteLength === 512 * 1024 && name.toLowerCase().includes("bios")) {
+        const m = machineRef.current ?? new Machine();
+        m.loadBios(bytes);
+        machineRef.current = m;
+        setLoaded(name);
+        setState({ run: "running", lastError: "", statusLine: `BIOS ${name} loaded — drop a PS-X EXE or CUE/BIN next` });
+        return;
+      }
       const exe = parsePsExe(bytes);
       const m = new Machine();
       m.loadExe(bytes, exe.pc0, exe.t_addr, exe.data);
