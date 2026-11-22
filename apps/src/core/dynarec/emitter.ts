@@ -62,7 +62,7 @@ export const OP = {
 } as const;
 
 /** Append unsigned LEB128. */
-export function uleb(out: number[], v: number): void {
+export function uleb(out: number[], v: number): number[] {
   let x = v >>> 0;
   do {
     let b = x & 0x7f;
@@ -70,17 +70,18 @@ export function uleb(out: number[], v: number): void {
     if (x !== 0) b |= 0x80;
     out.push(b);
   } while (x !== 0);
+  return out;
 }
 
 /** Append signed LEB128 (two's-complement, as i32.const takes). */
-export function sleb(out: number[], v: number): void {
+export function sleb(out: number[], v: number): number[] {
   let x = v | 0;
   for (;;) {
     const b = x & 0x7f;
     x >>= 7;
     if ((x === 0 && (b & 0x40) === 0) || (x === -1 && (b & 0x40) !== 0)) {
       out.push(b);
-      return;
+      return out;
     }
     out.push(b | 0x80);
   }
@@ -169,7 +170,7 @@ export class WasmEmitter {
     this.u32(idx);
   }
 
-  finish(): Uint8Array {
+  finish(): Uint8Array<ArrayBuffer> {
     return Uint8Array.from(this.out);
   }
 }

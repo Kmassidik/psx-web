@@ -78,16 +78,16 @@ export class Cpu {
     switch (op) {
       case 0x00: // SPECIAL
         switch (fn) {
-          case 0x00: if (rd) r[rd] = r[rt]!; break; // SLL (also NOP)
+          case 0x00: if (rd) r[rd] = (r[rt]! << sa) | 0; break; // SLL (also NOP)
           case 0x02: if (rd) r[rd] = r[rt]! >>> sa; break; // SRL
           case 0x03: if (rd) r[rd] = r[rt]! >> sa; break; // SRA
           case 0x04: if (rd) r[rd] = r[rt]! << (r[rs]! & 31); break; // SLLV
           case 0x06: if (rd) r[rd] = r[rt]! >>> (r[rs]! & 31); break; // SRLV
           case 0x07: if (rd) r[rd] = r[rt]! >> (r[rs]! & 31); break; // SRAV
-          case 0x08: this.pc = this.nextPc; this.nextPc = r[rs]!; break; // JR
+          case 0x08: this.nextPc = r[rs]!; break; // JR — delay slot runs, then pc = r[rs]
           case 0x09: { // JALR — link = instr addr + 8 (past delay slot)
             const t = (curPc + 8) | 0;
-            this.pc = this.nextPc; this.nextPc = r[rs]!;
+            this.nextPc = r[rs]!; // delay slot at this.pc executes first
             if (rd) r[rd] = t;
             break;
           }
@@ -140,6 +140,8 @@ export class Cpu {
           case 0x25: if (rd) r[rd] = r[rs]! | r[rt]!; break; // OR
           case 0x26: if (rd) r[rd] = r[rs]! ^ r[rt]!; break; // XOR
           case 0x27: if (rd) r[rd] = ~(r[rs]! | r[rt]!) | 0; break; // NOR
+          case 0x2a: if (rd) r[rd] = r[rs]! < r[rt]! ? 1 : 0; break; // SLT
+          case 0x2b: if (rd) r[rd] = (r[rs]! >>> 0) < (r[rt]! >>> 0) ? 1 : 0; break; // SLTU
           default: return false; // unknown SPECIAL = stop (verifier will flag)
         }
         return true;
