@@ -16,9 +16,10 @@ export const IRQ_VBLANK = 1 << 0; // line 0
  */
 import { Cpu } from "./cpu";
 import { Memory } from "./memory";
-import { Gpu } from "./gpu";
+import { Gpu, VRAM_W, VRAM_H } from "./gpu";
 import { Rcnt } from "./rcnt";
 import { GTE } from "./gte";
+import { Dma } from "./dma";
 
 export class Machine {
   readonly mem = new Memory();
@@ -37,20 +38,28 @@ export class Machine {
   irqStatus = 0;
   irqMask = 0;
   readonly cpu: Cpu;
-
-  // DMA ch2 (GPU)
-  private ch2Base = 0; private ch2Block = 0; private ch2Ctrl = 0;
-  private ch2Running = false;
-  // DMA ch6 (OTC)
-  private ch6Base = 0; private ch6Block = 0; private ch6Ctrl = 0; private ch6Running = false;
+  /** 7-channel DMA controller (ch0 MDECin … ch6 OTC), DmaUnit delivery. */
+  readonly dma = new Dma();
 
   constructor() {
     this.rcnt.irqFire = (line) => { this.raiseIrq(1 << line); };
+    this.dma.raiseIrq = () => { this.raiseIrq(IRQ_DMA); };
     this.cpu = new Cpu(this.mem, this.rcnt, this.gte, {
       read32: (va) => this.portRead(va),
       write32: (va, v) => this.portWrite(va, v),
     });
   }
+
+  /** DmaBus adapter: DMA reads/writes RAM words and drives GP0. */
+  private readonly dmaBus = {
+    readRam: (a: number) => this.mem.load32(a & 0x1f_fffc),
+    writeRam: (a: number, v: number) => this.mem.store32(a & 0x1f_fffc, v),
+    gpuWrite: (w: number) => this.gpu.writeGP0(w),
+    readVram: (addr: number) => this.gpu.vram[addr & (VRAM_W * VRAM_H - 1)]!,
+    writeVram: (addr: number, v: number) => {
+      this.gpu.vram[addr & (VRAM_W * VRAM_H - 1)] = v & 0x7fff;
+    },
+  };
 
   raiseIrq(bits: number): void {
     this.irqStatus |= bits;
@@ -60,11 +69,18 @@ export class Machine {
     switch (va) {
       case 0x1f801070: return this.irqStatus | 0;
       case 0x1f801074: return this.irqMask | 0;
-      case 0x1f801810: return this.gpu.readGPUSTAT();
-      case 0x1f801814: return this.gpu.readGPUSTAT();
-      case 0x1f8010c4: return this.ch2Block; case 0x1f8010c8: return this.ch2Ctrl;
-      case 0x1f8010e4: return this.ch6Block; case 0x1f8010e8: return this.ch6Ctrl;
-      default: return undefined;
+      case 0x1f801810: case 0x1f801814: return this.gpu.readGPUSTAT();
+      default: {
+        // DMA register window 0x1F801080-0x1F8010FF → DmaUnit regs.
+        if (va >= 0x1f80_1080 && va <= 0x1f80_10f7) {
+          if (va === 0x1f80_10f0) return this.dma.dpcr | 0;
+          if (va === 0x1f80_10f4) return this.dma.dicr | 0;
+          const ch = ((va - 0x1f80_1080) / 12) | 0;
+          const off = va - 0x1f80_1080 - ch * 12;
+          if (ch < 7 && off % 4 === 0 && off < 12) return this.dma.regs[ch * 3 + off / 4]! | 0;
+        }
+        return undefined;
+      }
     }
   }
 
@@ -74,54 +90,26 @@ export class Machine {
       case 0x1f801074: this.irqMask = v >>> 0; return true;
       case 0x1f801810: this.gpu.writeGP0(v); return true;
       case 0x1f801814: this.gpu.writeGP1(v); return true;
-      case 0x1f8010c0: this.ch2Base = v >>> 0; return true;
-      case 0x1f8010c4: this.ch2Block = v >>> 0; return true;
-      case 0x1f8010c8:
-        this.ch2Ctrl = v >>> 0;
-        if ((v & 0x0100_0000) && (v & 0x0200_0000) === 0) this.ch2Running = true;
-        return true;
-      case 0x1f8010e0: this.ch6Base = v >>> 0; return true;
-      case 0x1f8010e4: this.ch6Block = v >>> 0; return true;
-      case 0x1f8010e8:
-        this.ch6Ctrl = v >>> 0;
-        if ((v & 0x0100_0000) && (v & 0x0200_0000) === 0) this.ch6Running = true;
-        return true;
-      default: return false;
+      default: {
+        if (va >= 0x1f80_1080 && va <= 0x1f80_10f7) {
+          if (va === 0x1f80_10f0) { this.dma.dpcr = v >>> 0; return true; }
+          if (va === 0x1f80_10f4) { this.dma.writeDicr(v >>> 0); return true; }
+          const ch = ((va - 0x1f80_1080) / 12) | 0;
+          const off = va - 0x1f80_1080 - ch * 12;
+          if (ch < 7 && off % 4 === 0 && off < 12) {
+            this.dma.regs[ch * 3 + off / 4] = v >>> 0;
+            if (off === 8) this.dma.request(ch); // CHCR write triggers request
+            return true;
+          }
+        }
+        return false;
+      }
     }
   }
 
   /** Run DMA engines after each CPU slice (level-triggered, simple model). */
   private runDma(): void {
-    if (this.ch6Running) { // OTC: build reverse clear-texture table, per spec
-      let addr = this.ch6Base & 0x1f_fffc;
-      const n = (this.ch6Block & 0xffff) || 1;
-      for (let i = 0; i < n; i++) {
-        const next = i === n - 1 ? 0x00ff_ffff : ((addr - 4) & 0x1f_fffc);
-        this.mem.store32(addr, next);
-        addr = (addr - 4) & 0x1f_fffc;
-      }
-      this.ch6Running = false;
-      this.ch6Ctrl &= ~0x0100_0000;
-      this.raiseIrq(1 << 24 >> 24); // DMA irq bit 3 (channel 6) — see map below
-      this.irqStatus |= 8; // line 3 = DMA
-    }
-    if (this.ch2Running) { // GPU linked-list
-      let addr = this.ch2Base & 0x1f_fffc;
-      for (let guard = 0; guard < 1 << 20; guard++) {
-        const head = this.mem.load32(addr);
-        const words = (head >>> 24) & 0xff;
-        if (words === 0) break;
-        for (let i = 0; i < words; i++) {
-          addr = (addr + 4) & 0x1f_fffc;
-          this.gpu.writeGP0(this.mem.load32(addr));
-        }
-        addr = head & 0x1f_fffc;
-        if (addr === 0x00ff_ffff) break;
-      }
-      this.ch2Running = false;
-      this.ch2Ctrl &= ~0x0100_0000;
-      this.irqStatus |= 8;
-    }
+    this.dma.run(this.dmaBus);
   }
 
   /** Run up to n CPU instructions with DMA/rcnt service per slice. */
