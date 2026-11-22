@@ -17,6 +17,8 @@ export class Gpu {
   private gp0Mode = 0;
   private cmdWords: number[] = [];
   private cmdLeft = 0;
+  /** Accumulated words for the polygon currently being decoded. */
+  private primWords: number[] = [];
   private imgX = 0; private imgY = 0; private imgW = 0; private imgH = 0;
   private imgCur = 0;
   private fillX = 0; private fillY = 0; private fillW = 0; private fillH = 0;
@@ -26,17 +28,33 @@ export class Gpu {
   writeGP0(w: number): void {
     if (this.cmdLeft > 0) { this.gp0Param(w); return; }
     this.gp0Mode = (w >>> 24) & 0xff;
-    switch (this.gp0Mode) {
-      case 0x02: // Fill VRAM: cmd color + x,y + w,h → 2 param words
+    // Polygon opcode bits (no$psx): 24-27 opcode, 27 semi-trans, 28+29-30
+    // shape/vertex split... actual: bit27 semi, bit28 poly type, 29-30 verts,
+    // bit31 textured. Word counts: tri=3(+1 tex palette), quad=4(+1), plus
+    // 4/6 vertex words (textured adds texcache words per vertex).
+    const top = this.gp0Mode;
+    switch (top) {
+      case 0x02: // Fill VRAM
         this.cmdWords = [w]; this.cmdLeft = 2; break;
-      case 0xa0: // Load image: x,y, w,h then data
+      case 0xa0: // Load image
         this.cmdWords = [w]; this.cmdLeft = 2; break;
-      case 0xc0: // Store image (CPU read): x,y,w,h
+      case 0xc0: // Store image
         this.cmdWords = [w]; this.cmdLeft = 2; break;
       case 0x01: this.cmdWords = []; break; // clear cache: no-op
       default:
-        // Polygons/lines Phase 2: consume silently, never desync.
-        this.cmdWords = []; break;
+        if ((top & 0xe0) === 0x20 || (top & 0xe0) === 0x30) {
+          // Polygons 20h..3Fh: decode expected total words.
+          const quad = (top & 0x08) !== 0; // bit3: 0=tri 1=quad
+          const textured = (top & 0x04) !== 0; // bit2
+          const nVert = quad ? 4 : 3;
+          const colorWords = quad ? 4 : 3; // first vertex color word only for flat
+          // words = colors + vertices(+texcache per vertex when textured)
+          const total = colorWords + nVert + (textured ? nVert : 0);
+          this.primWords = [w];
+          this.cmdLeft = total - 1; // opcode word already counted
+        } else {
+          this.cmdWords = []; break;
+        }
     }
   }
 
@@ -70,7 +88,13 @@ export class Gpu {
         break;
       }
       case 0xc0: this.cmdWords.push(w); this.cmdLeft--; break;
-      default: this.cmdLeft--; break;
+      default:
+        // Polygon in progress: accumulate words, dispatch when complete.
+        this.primWords.push(w);
+        if (--this.cmdLeft === 0 && this.primWords.length > 0) {
+          void this.primWords; // rasterize(primWords) wired when RasterUnit lands
+        }
+        break;
     }
   }
 
