@@ -156,6 +156,13 @@ export class Machine {
     this.cpu.reset(pc0);
   }
 
+  /** load_bios spec (0x433540): fread(psxBIOS, 1, 0x80000) — 512 KiB max. */
+  loadBios(dump: Uint8Array): void {
+    if (dump.byteLength < 512 * 1024) throw new Error(`BIOS dump too small (${dump.byteLength} bytes, need 512 KiB)`);
+    this.mem.bios.set(dump.subarray(0, 512 * 1024));
+    this.cpu.reset(0xbfc0_0000); // BIOS entry
+  }
+
   /** Full-state snapshot (zsave_snapshot_* spec): all typed-array state. */
   snapshot(): MachineSnapshot {
     const g = this.gteCore;
