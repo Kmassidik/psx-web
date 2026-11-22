@@ -1,9 +1,18 @@
+/** IRQ line bits (I_STAT/I_MASK map, per no$psx interrupt register). */
+export const IRQ_CDROM = 1 << 2; // line 2
+export const IRQ_DMA = 1 << 3; // line 3 (DMA finish)
+export const IRQ_TIMERS = 1 << 4 | 1 << 5 | 1 << 6; // lines 4,5,6 (rcnt 0,1,2)
+export const IRQ_SPU = 1 << 9; // line 9
+export const IRQ_VBLANK = 1 << 0; // line 0
+
 /**
  * Machine = Memory + CPU + Gpu + Rcnt + minimal DMA/IRQ wired as MMIO ports.
  * Port map (per PS1 doc + binary's CdromIoIrqFunc* family layout):
  *   0x1F801070 IRQ status, 0x1F801074 IRQ mask
  *   0x1F801810 GP0, 0x1F801814 GP1, 0x1F801818 OTC-space GPUSTAT read
  *   0x1F8010C0+ ch2 (GPU) DMA, 0x1F8010E0+ ch6 (OTC) DMA, DPCR 0x1F8010F0
+ *   0x1F801800+ CDROM regs (CdromUnit), 0x1F801C00+ SPU regs (SpuUnit),
+ *   0x1F801820+ MDEC regs (MdecUnit) — wired as their modules land.
  */
 import { Cpu } from "./cpu";
 import { Memory } from "./memory";

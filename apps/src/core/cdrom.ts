@@ -1,209 +1,392 @@
 /**
- * CDROM controller (Phase 3): mirrors ePSXe CdromIoIrqFunc1 (INT3 ack)
- * / CdromIoIrqFunc2 (INT5 complete) / CdromGetInt5errCode (error latch).
- * No-disc, no real I/O; sector data is fed by the caller via setSectorData().
+ * CDROM controller (Phase 3). Mirrors ePSXe's CdromIoIrqFunc1 / CdromIoIrqFunc2
+ * / CdromGetInt5errCode shape: one response per interrupt, second responses
+ * queued until the first is acknowledged, error latch for INT5.
  *
- * UNVERIFIED (timing approximation): 1 exec() step == one interrupt-class
- * latency bucket. Constants below were chosen so every command needs exactly
- * two exec() calls to settle (ack -> complete); real hardware delays vary by
- * command and disc. Delay documentation is per-response in each handler.
+ * Spec reference: no$psx CDROM chapters (I/O ports, command summary,
+ * mainloop/responses, status commands). No disc, no real I/O; sector data is
+ * fed by the caller via setSectorData().
+ *
+ * UNVERIFIED (timing): 1 exec() step == one interrupt latency bucket. Per
+ * command delay documentation lives in the exec() handler for that command.
  */
 export class Cdrom {
   /**
-   * Hardware register window 1F801800..1F80180F, 14 bytes used.
-   * 0: index/status  1: (resp FIFO via r2 doorbell)
-   * 2: parameter FIFO (w)  3: response FIFO (r)
-   * 4: interrupt enable  5: interrupt flag  6: (diag)  7: ctrl
+   * Register window 1F801800..1F80180F. Semantics per no$psx I/O ports:
+   * 0 index/status   1 cmd(w)/resp+data(r)   2 param(w)/data(r)   3 req/ien/ifl
+   * 4-7 audio volume + apply (unimplemented, kept for window completeness)
    */
   readonly regs = new Uint8Array(16);
-  /** Current sector payload (2352 raw bytes) for ReadN/ReadS delivery. */
+  /** Current raw 2352-byte sector payload (host-fed disc image). */
   readonly sectorBuffer = new Uint8Array(2352);
-  /** IRQ hook; line 2 = CDROM (INT1 per no$psx IRQ naming). */
+  /** IRQ hook; line 2 = CDROM interrupt. */
   irqFire: (line: number) => void = () => {};
 
-  // --- internal FIFOs (regs 2/3 are the hardware doorbells) ---
+  // FIFOs
   private paramFifo: number[] = [];
-  private respFifo: number[] = [];
-  private respQueue: Array<{ code: number; data: number[] }> = [];
-  private cmd = -1; // active command opcode, -1 = none
-  private ready = false; // second response queued for next exec()
-  private errCode = 0; // CdromGetInt5errCode latch: last error cause
-  private lastStat = 0; // cached status byte
-  private reading = false; // ReadN/ReadS active
-  private seekTarget = 0; // last SeekL/SeekP target (LBA / MSF-decoded)
-  private modeReg = 0; // SetMode value
-  private motorOn = false; // spindle state
-  private idDone = false; // GetID finished
-  private readDelay = 0; // steps until next sector (UNVERIFIED: 1)
+  private respFifo: number[] = []; // 16-byte response buffer
+  private lastResp: number[] = []; // last response for pad/restart reads
+  private respPos = 0; // read position while padding/restarting
+  // Queued responses: first delivered immediately (pushResponse), second on
+  // ack (no$psx Mainloop/Responses: INT queue is one-deep per class).
+  private queued: Array<{ int: number; data: number[] }> = [];
+  // Active command pipeline
+  private cmd = -1; // opcode awaiting the next ack, -1 = none
+  private cmdParams: number[] = []; // params latched at command issue
+  private busy = false; // 1F801800 bit7 transmission busy
+  // Drive state
+  private stat = 0x00; // cached status byte (bit1..7 per no$psx)
+  private modeReg = 0; // Setmode value
+  private seekErr = 0; // second-response seek error (04h)
+  private errCode = 0; // last error byte (CdromGetInt5errCode latch)
+  private reading = false; // ReadN/ReadS active (data INT1 stream)
+  private dataPending = false; // sector latched, INT1 owed on next exec
+  private secondPending = false; // second response queued for next exec
+  private motorOn = false;
+  private shellOpen = false; // stat bit4 sticky
+  private idDone = false; // GetID completed
+  private seekTargetLba = 0;
+  private seekTargetMsf = [0, 0, 0];
 
   reset(): void {
     this.regs.fill(0);
     this.sectorBuffer.fill(0);
     this.paramFifo.length = 0;
     this.respFifo.length = 0;
-    this.respQueue.length = 0;
+    this.lastResp.length = 0;
+    this.respPos = 0;
+    this.queued.length = 0;
     this.cmd = -1;
-    this.ready = false;
-    this.errCode = 0;
-    this.lastStat = 0x18; // no disc, motor off
-    this.reading = false;
-    this.seekTarget = 0;
+    this.cmdParams.length = 0;
+    this.busy = false;
+    this.stat = 0x08; // IdError (GetID denied: no disc) per no$psx GetID table
     this.modeReg = 0;
+    this.seekErr = 0;
+    this.errCode = 0;
+    this.reading = false;
+    this.dataPending = false;
+    this.secondPending = false;
     this.motorOn = false;
+    this.shellOpen = false;
     this.idDone = false;
-    this.readDelay = 0;
+    this.seekTargetLba = 0;
+    this.seekTargetMsf = [0, 0, 0];
   }
 
-  // --- host / memory-mapped interface ---
+  constructor() {
+    this.reset();
+  }
 
-  /** Write to 1F801800 (index) or 1F801801 (command doorbell). */
+  // --- memory-mapped interface (1F801800..03, addr = offset) ---
+
+  /** Bus write. addr 0: index; 1: command; 2: param fifo; 3: req/ien/ifl. */
   write(addr: number, value: number): void {
-    if (addr === 0) {
-      this.regs[0] = value & 7;
-    } else if (addr === 1) {
-      this.command(value & 0xff);
+    const v = value & 0xff;
+    switch (addr & 3) {
+      case 0:
+        this.regs[0] = v & 3; // only bit0-1 are R/W
+        break;
+      case 1:
+        this.command(v);
+        break;
+      case 2:
+        if (this.paramFifo.length < 16) this.paramFifo.push(v);
+        break;
+      case 3: {
+        const idx = this.regs[0]! & 3;
+        if (idx === 0) {
+          // Request register: bit7 BFRD reloads data fifo (no-op: no DMA yet)
+        } else if (idx === 1) {
+          this.regs[4] = v; // Interrupt Enable
+        } else if (idx === 2) {
+          this.regs[6] = v; // audio volume mirror slot
+        } else {
+          // Index3: bit5 apply volume (no audio yet); bit6 clears param fifo
+          if (v & 0x40) this.paramFifo.length = 0;
+        }
+        break;
+      }
     }
   }
 
-  /** Read from 1F801800 (status/index) or 1F801801 (response pop). */
+  /** Bus read. addr 0: index/status; 1: response pop; 2: data fifo; 3: ifl. */
   read(addr: number): number {
-    if (addr === 0) {
-      let s = this.regs[0]! & 7;
-      if (this.paramFifo.length === 0) s |= 0x20; // EMPT
-      if (this.paramFifo.length === 16) s |= 0x40; // FULL
-      if (this.respFifo.length > 0) s |= 0x40; // DRQSTS
-      return s;
+    switch (addr & 3) {
+      case 0: {
+        const idx = this.regs[0]! & 3;
+        let s = idx;
+        if (!this.busy) s |= 0x80; // BUSYSTS 0=ready
+        if (this.paramFifo.length === 0) s |= 0x08; // PRMEMPT
+        if (this.paramFifo.length === 16) s |= 0x10; // PRMWRDY(=not full)
+        if (this.respFifo.length === 0) s |= 0x20; // RSLRRDY(0=empty->1?)
+        // no$psx: bit5 "Response fifo empty (0=Empty)" -- set when EMPTY is 0,
+        // i.e. bit5=1 means response available.
+        if (this.respFifo.length > 0) s |= 0x20;
+        if (this.dataPending) s |= 0x40; // DRQSTS data available
+        return s;
+      }
+      case 1:
+      case 2:
+      case 3: {
+        // Response fifo read (mirrors at 1801/1802/1803). no$psx: 00h-pad to
+        // the end of 16 bytes, then restart at the first response byte.
+        if (this.respFifo.length === 0) {
+          if (this.lastResp.length === 0) return 0;
+          this.respPos = (this.respPos + 1) % 16;
+          return this.lastResp[this.respPos % this.lastResp.length] ?? 0;
+        }
+        this.lastResp = this.respFifo.slice();
+        this.respPos = 0;
+        return this.respFifo.shift()!;
+      }
     }
-    const v = this.respFifo.shift() ?? 0xff;
-    if (this.respFifo.length === 0) this.regs[0]! &= ~0x40;
-    return v;
+    return 0; // unreachable
   }
 
-  /** Write to 1F801802 (parameter FIFO push). */
-  writeParam(value: number): void {
-    if (this.paramFifo.length < 16) this.paramFifo.push(value & 0xff);
-  }
-
-  /** Feed one raw 2352-byte sector from the host (disc image layer). */
+  /** Feed one raw 2352-byte sector (host disc-image layer). */
   setSectorData(data: Uint8Array): void {
     this.sectorBuffer.set(data.subarray(0, 2352));
-    if (this.reading && !this.ready) {
-      this.ready = true; // INT1 + DRQ stat on next exec()
-      this.readDelay = 0;
+    if (this.reading && !this.dataPending) {
+      this.dataPending = true; // INT1 + DRQ owed on next exec()
     }
   }
 
-  // --- command issue (from write(1)) ---
+  /** Explicit latch for tests / fast sector pump. */
+  latchSector(): void {
+    this.dataPending = true;
+  }
+
+  // --- command handling ---
 
   private command(op: number): void {
-    if (op >= 0x02 && op <= 0x05) {
-      // Int3 / Int2 / Int1 / Int0: immediate single response
-      this.lastStat = op === 0x02 ? 0x18 : this.lastStat;
-      this.pushResponse(op, [this.lastStat]);
+    // no$psx: if an INT is pending, the command is not executed yet. We do not
+    // latch it (UNVERIFIED: hardware latches one command); the caller must
+    // acknowledge and re-issue.
+    if (this.cmd !== -1 || this.queued.length > 0 || (this.regs[5]! & 0x07) !== 0)
       return;
-    }
+    this.busy = true; // command transmission busy until first response
+    this.cmdParams = this.paramFifo.splice(0); // command consumes the FIFO
     this.cmd = op;
-    this.wantComplete = true;
-    this.doubleInt = false;
-    this.paramFifo.length = 0; // per no$psx: command clears param FIFO
+    this.exec(); // first response goes out immediately per no$psx
   }
 
   /**
    * Advance the state machine one step.
+   *
    * Timing model (UNVERIFIED): 1 step == one IRQ latency bucket.
-   * Each normal command: step1 -> INT3 (ack), step2 -> INT5 (complete).
-   * Sector delivery after ReadN: step -> INT1 (data), then INT5 (complete).
+   * Command issue -> exec -> FIRST response (INT3, or INT5 on error).
+   * SECOND response (INT2/INT5) -> next exec() after INT3 ack, or immediately
+   * on the exec() after the command if nothing blocks (documented per case).
+   * ReadN/ReadS data INT1 -> next exec() after setSectorData.
    */
   exec(): void {
-    if (this.ready) {
-      // Sector arrived: INT1 + DRQ first, INT5 complete next step.
-      this.lastStat |= 0x20; // DRQ
-      this.pushResponse(1, [this.lastStat]);
-      this.ready = false;
-      this.respQueue.push({ code: 5, data: [this.lastStat & ~0x20] });
+    // 1. pending data INT1 wins (Read stream)
+    if (this.dataPending && this.queued.length === 0 && !this.busy) {
+      this.dataPending = false;
+      this.stat = (this.stat & ~0xe0) | 0x20 | (this.motorOn ? 0x02 : 0); // Read
+      this.pushResponse(1, [this.stat]);
       return;
     }
-    if (this.cmd < 0) return;
+    // 2. queued second response
+    if (this.secondPending && this.queued.length > 0 && !this.busy) {
+      const q = this.queued.shift()!;
+      this.secondPending = false;
+      this.pushResponse(q.int, q.data);
+      return;
+    }
+    // 3. execute the latched command
+    if (this.cmd === -1) return;
     const op = this.cmd;
     this.cmd = -1;
+    this.busy = false;
+    const p = this.cmdParams;
 
     switch (op) {
-      case 0x01: { // GetStat
-        // Delays (UNVERIFIED): ack ~1 step, complete ~1 step.
-        this.pushResponse(3, [this.lastStat]);
-        this.respQueue.push({ code: 5, data: [this.lastStat] });
+      case 0x01: { // Getstat: INT3(stat); resets shell-open flag on read
+        // Delay: UNVERIFIED, ~instant on hardware.
+        const s = this.stat;
+        this.shellOpen = false;
+        this.stat &= ~0x10;
+        this.pushResponse(3, [s]);
         break;
       }
-      case 0x06: { // ReadN
+      case 0x02: { // Setloc amm,ass,asect
+        this.seekTargetMsf = [p[0] ?? 0, p[1] ?? 0, p[2] ?? 0];
+        this.seekTargetLba =
+          ((p[0] ?? 0) * 60 + (p[1] ?? 0)) * 75 + (p[2] ?? 0);
+        this.pushResponse(3, [this.stat]);
+        break;
+      }
+      case 0x03: { // Play (CD-DA)
+        this.motorOn = true;
+        this.stat = 0x80 | 0x02; // Play + motor
+        this.pushResponse(3, [this.stat]);
+        break;
+      }
+      case 0x04: // Forward
+      case 0x05: { // Backward
+        this.pushResponse(3, [this.stat]);
+        break;
+      }
+      case 0x06: // ReadN
+      case 0x1b: { // ReadS
         this.motorOn = true;
         this.reading = true;
-        this.seeking = false;
-        this.lastStat = 0x02; // SPIN motor on
-        // ack (1 step), then INT5 "reading" (1 step); data arrives later
-        // via setSectorData -> exec -> INT1.
+        // stat: motor on, no Read-bit yet until seek completes (no$psx
+        // Status: "Read/Play won't get set until after Seek completion").
+        // The "second response" of Read is the INT1 data stream itself
+        // (no$psx Mainloop: ReadN -> INT3(stat), INT1(stat), datablock),
+        // so nothing is queued here; sectors arm INT1 via setSectorData.
         this.pushResponse(3, [0x02]);
-        this.respQueue.push({ code: 5, data: [0x02] });
         break;
       }
-      case 0x09: // Pause (bonus; keep simple, same shape as SeekP)
-      case 0x0a: { // Init
-        this.reading = false;
+      case 0x07: { // MotorOn
+        const already = this.motorOn;
+        this.motorOn = true;
+        const s = this.stat | 0x02;
+        this.stat = s;
+        this.pushResponse(3, [s]);
+        // Delay: UNVERIFIED (spin-up, hardware ~1s).
+        this.queueSecond(already ? 5 : 2, already ? [s, 0x20] : [s]);
+        break;
+      }
+      case 0x08: { // Stop: bit1 cleared in second response
+        const s0 = this.stat & ~0x20;
         this.motorOn = false;
-        this.lastStat = 0x18;
-        // Delays (UNVERIFIED): ack 1 step, complete 1 step.
-        this.pushResponse(3, [0x18]);
-        this.respQueue.push({ code: 5, data: [0x18] });
+        this.reading = false;
+        this.pushResponse(3, [s0]);
+        const s1 = s0 & ~0x02;
+        this.stat = s1;
+        // Delay: UNVERIFIED (magnetic brakes, hardware ~1s).
+        this.queueSecond(2, [s1]);
         break;
       }
-      case 0x0b: { // SeekL: param = 4-byte LBA
-        const l = this.paramFifo;
-        this.seekTarget =
-          ((l[0] ?? 0) | ((l[1] ?? 0) << 8) | ((l[2] ?? 0) << 16)) | 0;
-        this.seeking = true;
+      case 0x09: { // Pause
+        const s0 = this.stat;
+        this.reading = false;
+        this.pushResponse(3, [s0]);
+        const s1 = s0 & ~0x20; // Read bit cleared
+        this.stat = s1;
+        // Delay: UNVERIFIED (hardware: head settle).
+        this.queueSecond(2, [s1]);
+        break;
+      }
+      case 0x0a: { // Init: mode=20h per no$psx, motor on
+        this.modeReg = 0x20;
         this.motorOn = true;
-        this.lastStat = 0x42; // SEEK|SPIN
-        this.pushResponse(3, [0x42]);
-        this.respQueue.push({ code: 5, data: [0x02] });
+        this.reading = false;
+        const s0 = this.stat | 0x02;
+        this.pushResponse(3, [s0]);
+        const s1 = s0; // motor spinning, ready
+        this.stat = s1;
+        // Delay: UNVERIFIED (hardware: drive standby sequence).
+        this.queueSecond(2, [s1]);
         break;
       }
-      case 0x0c: { // SeekP: param = 3-byte MSF
-        const l = this.paramFifo;
-        this.seekTarget =
-          ((l[0] ?? 0) * 75 + (l[1] ?? 0)) * 75 + ((l[2] ?? 0) | 0);
-        this.seeking = true;
+      case 0x0b: // Mute
+      case 0x0c: // Demute
+        this.pushResponse(3, [this.stat]);
+        break;
+      case 0x0d: { // Setfilter file,channel
+        this.pushResponse(3, [this.stat]);
+        break;
+      }
+      case 0x0e: { // Setmode
+        this.modeReg = p[0] ?? 0;
+        this.pushResponse(3, [this.stat]);
+        break;
+      }
+      case 0x0f: { // Getparam: stat,mode,null,file,channel
+        this.pushResponse(3, [this.stat, this.modeReg, 0x00, 0x00, 0x00]);
+        break;
+      }
+      case 0x10: { // GetlocL (8 bytes from current sector header)
+        // Sector header/subheader: bytes 12..19 of the raw 2352 sector.
+        const hdr = Array.from(this.sectorBuffer.subarray(12, 20));
+        this.pushResponse(3, hdr);
+        break;
+      }
+      case 0x11: { // GetlocP (8 bytes subchannel Q, BCD; zeros: no disc)
+        this.pushResponse(3, [0, 1, 0, 0, 0, 0, 0, 0]);
+        break;
+      }
+      case 0x12: { // SetSession
+        this.pushResponse(3, [this.stat]);
+        this.queueSecond(2, [this.stat]);
+        break;
+      }
+      case 0x13: { // GetTN: stat,first,last (BCD; no disc -> 00,00)
+        this.pushResponse(3, [this.stat, 0x00, 0x00]);
+        break;
+      }
+      case 0x14: { // GetTD track: stat,mm,ss (BCD; no disc -> 00,00)
+        this.pushResponse(3, [this.stat, 0x00, 0x00]);
+        break;
+      }
+      case 0x15: { // SeekL (target = prior Setloc, per no$psx)
         this.motorOn = true;
-        this.lastStat = 0x42;
-        this.pushResponse(3, [0x42]);
-        this.respQueue.push({ code: 5, data: [0x02] });
+        const s0 = this.stat | 0x40 | 0x02; // Seek + motor
+        this.stat = s0;
+        this.pushResponse(3, [s0]);
+        const s1 = s0 & ~0x40; // seek done, motor on
+        this.stat = s1;
+        // Delay: UNVERIFIED (hardware: physical seek, tens of ms..seconds).
+        this.queueSecond(2, [s1]);
         break;
       }
-      case 0x0e: { // SetMode: param = 1-byte mode flags
-        this.modeReg = this.paramFifo[0] ?? 0;
-        this.pushResponse(3, [this.lastStat]);
-        this.respQueue.push({ code: 5, data: [this.lastStat] });
+      case 0x16: { // SeekP
+        this.motorOn = true;
+        const s0 = this.stat | 0x40 | 0x02;
+        this.stat = s0;
+        this.pushResponse(3, [s0]);
+        const s1 = s0 & ~0x40;
+        this.stat = s1;
+        this.queueSecond(2, [s1]); // Delay: UNVERIFIED, same as SeekL
         break;
       }
-      case 0x19: { // Test
-        this.pushResponse(3, [this.lastStat]);
-        this.respQueue.push({ code: 5, data: [this.lastStat] });
+      case 0x19: { // Test sub_function
+        const sub = p[0] ?? 0xff;
+        if (sub === 0x20) {
+          // Get cdrom BIOS date/version (yy,mm,dd,ver). UNVERIFIED: values
+          // chosen as the commonly reported controller date (1994-12-xx).
+          this.pushResponse(3, [0x94, 0x09, 0x19, 0xc2]);
+        } else if (sub <= 0x05 || (sub >= 0x10 && sub <= 0x1a)) {
+          this.pushResponse(3, [this.stat]);
+        } else {
+          this.errCode = 0x10; // invalid sub_function
+          this.pushResponse(5, [0x10 | 0x01, 0x10]);
+        }
         break;
       }
-      case 0x1a: { // GetID
-        // No disc: per no$psx, INT5 error 80h (no disc) with stat 0x18.
-        // Delays (UNVERIFIED): ack 1 step, error complete 1 step.
-        this.pushResponse(3, [0x18]); // ack ok
-        this.errCode = 0x80;
-        this.respQueue.push({ code: 5, data: [0x18, 0x00, 0x00, 0x80] });
+      case 0x1a: { // GetID: no disc -> INT3(stat) + INT5(08h,40h,00,00,00,00,00,00)
+        const s = this.stat; // bit3 IdError set from reset
+        this.pushResponse(3, [s]);
+        this.idDone = true;
+        this.errCode = 0x40;
+        // Delay: UNVERIFIED (hardware: SCEx read attempt, ~1s).
+        this.queueSecond(5, [0x08, 0x40, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00]);
         break;
       }
-      case 0x1e: { // ReadTOC
-        this.pushResponse(3, [0x02]);
-        this.respQueue.push({ code: 5, data: [0x02] });
+      case 0x1c: { // Reset: INT3(stat), no completion INT (SW delays 1/8s)
+        this.modeReg = 0;
+        this.motorOn = false;
+        this.reading = false;
+        this.pushResponse(3, [this.stat & ~0x20]);
         break;
       }
-      default: { // unsupported opcode -> error response
-        this.errCode = 0x40; // bad command (UNVERIFIED code choice)
-        this.pushResponse(5, [0x18, 0x00, 0x00, 0x40]);
+      case 0x1e: { // ReadTOC: INT3(late-stat) + INT2(stat)
+        const s0 = this.stat | 0x02; // spin-up
+        this.pushResponse(3, [s0]);
+        const s1 = s0;
+        this.stat = s1;
+        // Delay: UNVERIFIED (hardware: TOC read, ~1s).
+        this.queueSecond(2, [s1]);
+        break;
+      }
+      default: { // invalid command -> INT5(stat|1, 40h), params NOT removed
+        this.errCode = 0x40; // Invalid command (no$psx error byte 40h)
+        this.paramFifo.unshift(...this.cmdParams); // per no$psx caution note
+        this.pushResponse(5, [(this.stat | 0x01) & 0xff, 0x40]);
         break;
       }
     }
@@ -211,23 +394,44 @@ export class Cdrom {
 
   // --- internals ---
 
-  private pushResponse(code: number, data: number[]): void {
-    this.respFifo.length = 0;
-    for (const b of data) this.respFifo.push(b);
-    this.regs[3] = code & 0x0f; // response FIFO index byte per doc
-    this.regs[5] = code & 0x0f; // interrupt flag: cause
-    this.regs[4] = this.regs[4]! | (code & 0x0f); // interrupt enable set
-    this.irqFire(2); // CDROM IRQ line
-    if (code === 5) this.doubleInt = true;
+  private queueSecond(int: number, data: number[]): void {
+    this.queued.push({ int, data });
+    this.secondPending = true;
   }
 
-  /** CdromGetInt5errCode mirror: read last error cause (0 = none). */
+  /** Deliver a response now: load FIFO, set IRQ flag, raise CDROM IRQ. */
+  private pushResponse(int: number, data: number[]): void {
+    this.respFifo = data.slice(0, 16);
+    this.regs[5] = int & 0x07; // Interrupt Flag read value (1F801803 idx1)
+    this.regs[4] = this.regs[4]! | 0x1f; // IEN default: all set
+    this.irqFire(2); // CDROM IRQ line
+    if (int === 5) {
+      // Error response: stat bit0/2 set in data[0], latch error byte.
+      if ((data[0] ?? 0) & 0x01) this.errCode = data[1] ?? 0;
+      this.stat |= 0x01;
+    }
+  }
+
+  /** Acknowledge pending INT(s): write value to 1F801803h.Index1. */
+  ack(value: number): void {
+    if (value & 0x07) {
+      this.regs[5] = 0;
+      this.respFifo.length = 0;
+    }
+  }
+
+  /** CdromGetInt5errCode mirror: last error byte (00h = none). */
   getErrorCode(): number {
     return this.errCode;
   }
 
-  /** True after a completed GetID (diagnostic helper). */
+  /** Diagnostic: GetID has completed. */
   get idComplete(): boolean {
     return this.idDone;
+  }
+
+  /** Diagnostic: Setmode register (Init sets 20h). */
+  get mode(): number {
+    return this.modeReg;
   }
 }

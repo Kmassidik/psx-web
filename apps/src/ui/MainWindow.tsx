@@ -8,6 +8,9 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { parsePsExe } from "../core/loader/psexe";
 import { Machine } from "../core/machine";
 import { useApp, setState } from "./store";
+import { VideoConfigDialog } from "./dialogs/VideoConfigDialog";
+import { GamepadConfigDialog } from "./dialogs/GamepadConfigDialog";
+import { MemcardDialog } from "./dialogs/MemcardDialog";
 
 export function MainWindow() {
   const run = useApp((s) => s.run);
@@ -15,6 +18,8 @@ export function MainWindow() {
   const lastError = useApp((s) => s.lastError);
   const [loaded, setLoaded] = useState<string | null>(null);
   const [dragOver, setDragOver] = useState(false);
+  const [openMenu, setOpenMenu] = useState<string | null>(null);
+  const [dialog, setDialog] = useState<"video" | "gamepad" | "memcard" | null>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const fileInput = useRef<HTMLInputElement>(null);
   const machineRef = useRef<Machine | null>(null);
@@ -85,13 +90,40 @@ export function MainWindow() {
       onDragLeave={() => setDragOver(false)}
       onDrop={(e) => { e.preventDefault(); setDragOver(false); onPick(e.dataTransfer.files); }}
     >
-      <div className="flex items-center gap-1 border-b border-[#2a2d31] bg-[#232629] px-1 py-1">
+      <div className="relative z-40 flex items-center gap-1 border-b border-[#2a2d31] bg-[#232629] px-1 py-1">
         <span className={menuStyle}>File</span>
         <span className={menuStyle}>Run</span>
         <span className={menuStyle}>Config</span>
-        <span className={menuStyle}>Options</span>
+        <span
+          className={menuStyle}
+          onClick={(e) => {
+            e.stopPropagation();
+            setOpenMenu(openMenu === "Options" ? null : "Options");
+          }}
+        >
+          Options
+        </span>
+        {openMenu === "Options" && (
+          <div
+            className="absolute left-[104px] top-full flex flex-col border border-[#2a2d31] bg-[#232629] py-1 shadow-lg"
+            onClick={() => setOpenMenu(null)}
+          >
+            <span className={menuStyle} onClick={() => setDialog("video")}>
+              Video
+            </span>
+            <span className={menuStyle} onClick={() => setDialog("gamepad")}>
+              Game Pads
+            </span>
+            <span className={menuStyle} onClick={() => setDialog("memcard")}>
+              Memory card
+            </span>
+          </div>
+        )}
         <span className="ml-auto text-[11px] text-[#8a8880]">psx-web · from scratch</span>
       </div>
+      {dialog === "video" && <VideoConfigDialog onClose={() => setDialog(null)} />}
+      {dialog === "gamepad" && <GamepadConfigDialog onClose={() => setDialog(null)} />}
+      {dialog === "memcard" && <MemcardDialog onClose={() => setDialog(null)} />}
 
       <div
         className={`flex flex-1 items-center justify-center ${dragOver ? "bg-[#232d3a]" : ""}`}
