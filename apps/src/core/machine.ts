@@ -161,12 +161,18 @@ export class Machine {
     this.dma.run(this.dmaBus);
   }
 
+  private vblankAcc = 0;
+
   /** Run up to n CPU instructions with DMA/CDROM/SPU/rcnt service per slice. */
   runSlice(n: number): boolean {
     const ok = this.cpu.run(n);
     this.runDma();
     this.cdrom.exec(); // one interrupt-bucket per slice (timing: see cdrom.ts)
     this.spu.tick(n); // SPU clock = cpu cycles / 768 internally
+    // VBLANK: ~60Hz — accumulate CPU cycles and raise IRQ line 0 each frame
+    // (N = cycles/frame ≈ 33.8M/60 ≈ 563k at 33.8MHz CPU).
+    this.vblankAcc += n;
+    if (this.vblankAcc >= 563_000) { this.vblankAcc -= 563_000; this.raiseIrq(IRQ_VBLANK); }
     // rcnt ticks on the same clock; slice granularity is fine for Phase 1
     return ok;
   }
