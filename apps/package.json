@@ -1,0 +1,22 @@
+{
+  "name": "psx-web",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "bun run src/dev/server.ts",
+    "build": "bun build src/main.tsx --outdir dist --target browser --minify --sourcemap=external",
+    "test": "bun test",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0"
+  },
+  "devDependencies": {
+    "@types/react": "^19.0.0",
+    "@types/react-dom": "^19.0.0",
+    "@types/bun": "^1.2.0",
+    "typescript": "^5.7.0"
+  }
+}
