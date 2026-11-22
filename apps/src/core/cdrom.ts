@@ -133,7 +133,7 @@ export class Cdrom {
         // then restarts at the first response byte.
         if (this.respFifo.length > 0) {
           const b = this.respFifo.shift()!;
-          this.respIdx = this.lastResp.length - this.respFifo.length;
+          this.respIdx = this.lastResp.length - this.respFifo.length - 1;
           return b;
         }
         if (this.lastResp.length === 0) return 0;
@@ -149,6 +149,7 @@ export class Cdrom {
   /** Feed one raw 2352-byte sector (host disc-image layer). */
   setSectorData(data: Uint8Array): void {
     this.sectorBuffer.set(data.subarray(0, 2352));
+    this.stat &= ~0x08; // data arriving => disc present, IdError cleared
     if (this.reading && !this.dataPending) {
       this.dataPending = true; // INT1 + DRQ owed on next exec()
     }

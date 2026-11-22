@@ -48,28 +48,27 @@ describe("CDROM command sequences (per-command INT/stat contract)", () => {
     expect(c.read(1)).toBe(0x00);
   });
 
-  test("ReadN(06): INT3(02h) -> INT5, data INT1(2xh) with DRQ + sector copy", () => {
+  test("ReadN(06): INT3(02h), then INT1(2xh) with DRQ per fed sector", () => {
     const { c, ints } = make();
     c.write(1, 0x06);
     expect(ints).toEqual([3]);
     expect(c.read(1)).toBe(0x02); // motor on, no Read-bit yet (seeking)
     c.ack(0x07);
-    c.exec(); // second response (INT5 folded: read-armed error-free)
-    expect(ints).toEqual([3, 5]);
-    c.ack(0x07);
-    // host feeds a sector
+    c.exec(); // no second response until a sector arrives (Read: INT1 is 2nd)
+    expect(ints).toEqual([3]);
+    // host feeds a sector -> DRQ latched, INT1 on next exec
     const sector = new Uint8Array(2352);
-    sector[0] = 0x00;
-    sector.set([0xaa, 0xbb], 12); // sync-ish header bytes
+    sector.set([0xaa, 0xbb], 12); // header bytes
     sector[2351] = 0x7f;
     c.setSectorData(sector);
-    expect(c.read(0) & 0x40).toBe(0x00); // DRQ not yet delivered (needs exec)
+    expect(c.read(0) & 0x40).toBe(0x40); // DRQSTS: sector latched
     c.exec(); // deliver INT1
-    expect(ints).toEqual([3, 5, 1]);
-    expect(c.read(0) & 0x40).toBe(0x40); // DRQSTS: data fifo non-empty
+    expect(ints).toEqual([3, 1]);
+    expect(c.read(1)).toBe(0x22); // Read + motor stat
     expect(c.sectorBuffer[13]).toBe(0xbb);
     expect(c.sectorBuffer[2351]).toBe(0x7f);
     c.ack(0x07);
+    expect(c.read(0) & 0x40).toBe(0x00); // DRQ cleared by ack
   });
 
   test("SeekL(15)/SeekP(16): INT3(4xh) seek-stat then INT2 stat seek-cleared", () => {
@@ -83,6 +82,7 @@ describe("CDROM command sequences (per-command INT/stat contract)", () => {
     c.exec();
     expect(ints).toEqual([3, 2]);
     expect(c.read(1) & 0x40).toBe(0x00); // seek completed
+    c.ack(0x07); // INT2 acknowledged -> new commands accepted
     // SeekP same shape
     c.write(1, 0x16);
     expect(ints[ints.length - 1]).toBe(3);
@@ -248,10 +248,10 @@ describe("CDROM INT sequence counts", () => {
     c.ack(0x07);
     c.exec();
     expect(ints).toEqual([3]); // held command was dropped, not executed
-    c.write(1, 0x0a); // now accepted
+    c.write(1, 0x0a); // now accepted -> its own INT3
     c.ack(0x07);
     c.exec();
-    expect(ints).toEqual([3, 2]);
+    expect(ints).toEqual([3, 3, 2]);
   });
 });
 
@@ -325,7 +325,7 @@ describe("CDROM error / latch behavior", () => {
     c.ack(0x07);
     c.exec();
     c.reset();
-    expect(c.read(1)).toBe(0xff); // response fifo empty pad
+    expect(c.read(1)).toBe(0x00); // fresh buffer: 0-byte response, 00h pad
     expect(c.getErrorCode()).toBe(0);
     expect(c.regs[5]).toBe(0);
     expect(c.idComplete).toBe(false);
