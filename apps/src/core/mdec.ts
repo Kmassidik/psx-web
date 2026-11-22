@@ -21,21 +21,10 @@ import {
   AANSCALES,
   AAN_EXTRA,
   AAN_PRESCALE_SCALE,
-  BS_END_OF_FRAME,
-  BitReader,
-  BitWriter,
-  DC_SIZE_CHROMA,
-  DC_SIZE_LUMA,
   STANDARD_SCALE_TABLE,
-  VLC_DECODE_TABLE,
-  VLC_EOB,
-  VLC_ESC,
-  VLC_MAX_LEVEL,
-  VLC_RUN,
   ZIGZAG,
-  type DcSizeCode,
-  type VlcCode,
 } from "./mdec-tables";
+import { decode16 as decode16Bs, encode16 as encode16Bs } from "./mdec-bs";
 
 const EOB = 0xfe00; // end-of-block / padding halfword
 const BLOCKS = 6; // Cr,Cb,Y1,Y2,Y3,Y4 per colored macroblock
@@ -74,8 +63,9 @@ const clamp8 = (c: number): number => {
 const clamp5 = (c: number): number => (c < -16 ? 0 : c > 15 ? 31 : c + 16);
 
 /** One AAN butterfly stage over columns (stride 8) or rows (stride 1). */
-const aanStage = (b: Int32Array, cols: boolean): void => {
+const aanStage = (b: Int32Array, cols: boolean, active: number): void => {
   for (let i = 0; i < 8; i++) {
+    if ((active & (1 << i)) === 0) continue; // flat axis: keep raw (reference `continue`)
     const base = cols ? i : i * 8;
     const st = (r: number): number => (cols ? b[base + r * 8]! : b[base + r]!);
     const ld = (r: number, v: number): void => {
@@ -113,7 +103,10 @@ const aanStage = (b: Int32Array, cols: boolean): void => {
 /**
  * AAN fast IDCT (reference fast_idct_core family, 80 muls). usedCol === -1
  * means DC-only; otherwise a bitmask of columns 0..7 with AC energy in rows
- * 1..7. Columns without AC energy flat-fill from their DC before the pass.
+ * 1..7 — ONLY those columns get the column butterfly. Columns without AC
+ * energy flat-fill from their row-0 coefficient and keep the RAW value (a
+ * constant column needs no transform, and the AAN butterfly is not
+ * idempotent — running it on raw values corrupts them, reference `continue`).
  */
 const idctAan = (blk: Int32Array, usedCol: number): void => {
   if (usedCol === -1) {
@@ -125,17 +118,18 @@ const idctAan = (blk: Int32Array, usedCol: number): void => {
     if ((usedCol & (1 << i)) === 0 && blk[i] !== 0) {
       const v = blk[i]!;
       for (let r = 1; r < 8; r++) blk[i + r * 8] = v;
-      usedCol |= 1 << i;
     }
   }
-  aanStage(blk, true);
+  aanStage(blk, true, usedCol);
   if (usedCol === 1) {
+    // All ACs in column 0 (vertical frequencies): rows are constant → no row
+    // butterfly, just spread each row's column-0 value.
     for (let r = 0; r < 8; r++) {
       const v = blk[r * 8]!;
       for (let x = 1; x < 8; x++) blk[r * 8 + x] = v;
     }
   } else {
-    aanStage(blk, false);
+    aanStage(blk, false, 0xff);
   }
 };
 
@@ -573,156 +567,13 @@ export class Mdec {
     this.regs = r >>> 0;
   }
 
-  // ------------------------------------------------------------------
-  // decode16 — Sony BS bitstream (variable-length huffman) front end.
-  // Decodes BS v1/v2 (raw 10-bit DC) and v3 (delta-coded DC, MPEG-1 size
-  // codes) into the run-level stream the hardware path consumes, and
-  // encodes run-level back to BS v2 (DecDCTvlc / its inverse).
-  // ------------------------------------------------------------------
-
-  /** Decode a BS bitstream to run-level halfwords (DecDCTvlc equivalent). */
+  /** BS bitstream front end ("decode16") — see mdec-bs.ts. */
   decode16(bs: Uint8Array): Uint16Array {
-    if (bs.length < 8) return new Uint16Array(0);
-    const dv = new DataView(bs.buffer, bs.byteOffset, bs.byteLength);
-    const rlWords = dv.getUint16(0, true);
-    const magic = dv.getUint16(2, true);
-    const quant = dv.getUint16(4, true);
-    const version = dv.getUint16(6, true);
-    if (magic !== 0x3800) return new Uint16Array(0);
-    if (version === 0 || version > 3) return new Uint16Array(0);
-    const deltaDc = version === 3;
-    const target = rlWords * 2;
-    const rl: number[] = [];
-    const br = new BitReader(bs.subarray(8));
-    const lastDc = [0, 0, 0];
-    let blockInMb = 0;
-    while (rl.length < target && !br.overrun) {
-      const blockStart = rl.length;
-      let dc: number;
-      if (!deltaDc) {
-        dc = br.get(10);
-        if (dc === BS_END_OF_FRAME) break; // End of Frame code
-      } else {
-        const luma = blockInMb >= 2;
-        const book: readonly DcSizeCode[] = luma ? DC_SIZE_LUMA : DC_SIZE_CHROMA;
-        let size = -1;
-        for (let s = 0; s < 9; s++) {
-          if (br.peek(book[s]!.length) === book[s]!.code) {
-            size = s;
-            break;
-          }
-        }
-        if (size < 0 || br.overrun) break;
-        br.get(book[size]!.length);
-        let delta = 0;
-        if (size > 0) {
-          const raw = br.get(size);
-          // Top bit set = positive; else offset from -(2^size - 1).
-          delta = (raw & (1 << (size - 1))) !== 0 ? raw : raw - ((1 << size) - 1);
-        }
-        const pred = luma ? 2 : blockInMb; // Y shares one predictor
-        lastDc[pred] += delta * 4;
-        dc = lastDc[pred] & 0x3ff;
-        if (++blockInMb === 6) blockInMb = 0;
-      }
-      if (br.overrun) break;
-      rl.push(((quant & 0x3f) << 10) | (dc & 0x3ff));
-      let closed = false;
-      while (!closed) {
-        if (rl.length >= target) {
-          rl.length = blockStart; // block does not fit: drop it
-          br.overrun = true;
-          break;
-        }
-        let code = 0;
-        let found = VLC_DECODE_TABLE.get((-1 << 20) | 0); // never matches; init
-        void found;
-        found = undefined;
-        for (let bits = 1; bits <= 17 && found === undefined; bits++) {
-          code = (code << 1) | br.get(1);
-          found = VLC_DECODE_TABLE.get((bits << 20) | code);
-        }
-        if (found === undefined || br.overrun) {
-          rl.length = blockStart;
-          br.overrun = true;
-          break;
-        }
-        if (found.eob) {
-          rl.push(EOB);
-          closed = true;
-        } else if (found.escape) {
-          rl.push(br.get(16)); // raw run-level word, verbatim
-        } else {
-          rl.push(((found.run & 0x3f) << 10) | (found.level & 0x3ff));
-        }
-      }
-      if (br.overrun) break;
-    }
-    while (rl.length < target) rl.push(EOB); // footers the bitstream omits
-    return new Uint16Array(rl);
+    return decode16Bs(bs);
   }
 
-  /** Encode run-level halfwords into a BS v2 bitstream (decode16 inverse). */
+  /** Encode run-level halfwords to a BS v2 bitstream (decode16 inverse). */
   encode16(rl: Uint16Array): Uint8Array {
-    interface EncBlock {
-      header: number;
-      ac: number[];
-    }
-    const blocks: EncBlock[] = [];
-    let i = 0;
-    let minQ = 64;
-    let maxQ = -1;
-    let halfwords = 0;
-    while (i < rl.length) {
-      while (i < rl.length && rl[i] === EOB) i++; // skip padding
-      if (i >= rl.length) break;
-      const header = rl[i++]!;
-      const q = (header >>> 10) & 0x3f;
-      minQ = Math.min(minQ, q);
-      maxQ = Math.max(maxQ, q);
-      const ac: number[] = [];
-      while (i < rl.length && rl[i] !== EOB) ac.push(rl[i++]!);
-      if (i >= rl.length) throw new Error("stream ends mid-block, no FE00 terminator");
-      i++;
-      blocks.push({ header, ac });
-      halfwords += ac.length + 2;
-    }
-    if (blocks.length === 0) throw new Error("no blocks in stream");
-    if (minQ !== maxQ) throw new Error("q_scale varies across the frame and BS carries QUANT once");
-    const padded = (halfwords + 0x3f) & ~0x3f;
-    const rlWords = (padded + 1) >> 1;
-    if (rlWords > 0xffff) throw new Error("run-level stream too long for the BS header");
-    const bw = new BitWriter();
-    for (const block of blocks) {
-      const dc = block.header & 0x3ff;
-      // DC 0x1FF is the End of Frame code: saturate to +510 instead.
-      bw.put(dc === BS_END_OF_FRAME ? BS_END_OF_FRAME - 1 : dc, 10);
-      for (const w of block.ac) {
-        const run = (w >>> 10) & 0x3f;
-        let level = w & 0x3ff;
-        if ((level & 0x200) !== 0) level -= 0x400;
-        const mag = Math.abs(level);
-        const c: VlcCode | undefined =
-          run < 32 && mag >= 1 && mag <= VLC_MAX_LEVEL[run]! ? VLC_RUN[run]![mag - 1] : undefined;
-        if (c !== undefined && c.bits !== 0) {
-          bw.put(level < 0 ? c.code | 1 : c.code, c.bits);
-        } else {
-          // Off the book: ESC, then the 16-bit run-level word verbatim.
-          bw.put(VLC_ESC.code, VLC_ESC.bits);
-          bw.put(w & 0xffff, 16);
-        }
-      }
-      bw.put(VLC_EOB.code, VLC_EOB.bits);
-    }
-    bw.put(BS_END_OF_FRAME, 10); // End of Frame in the next DC slot
-    bw.finish(); // pad to byte, then to 32-bit words
-    const out = new Uint8Array(8 + bw.bytes.length);
-    const odv = new DataView(out.buffer);
-    odv.setUint16(0, rlWords, true);
-    odv.setUint16(2, 0x3800, true); // word 0 IS the MDEC(1) decode command
-    odv.setUint16(4, minQ, true);
-    odv.setUint16(6, 2, true); // BS v2: raw DC
-    out.set(bw.bytes, 8);
-    return out;
+    return encode16Bs(rl);
   }
 }

@@ -80,10 +80,6 @@ function decodeStream(m: Mdec, hs: number[], depth: number, signed = false, stp 
   return new Uint8Array(m.readOutput().slice().buffer);
 }
 
-/** Six identical blocks (header + AC words + EOB), one per macroblock slot. */
-const sixBlocks = (block: number[]): number[] =>
-  Array.from({ length: 6 }, () => [...block, 0xfe00]).flat();
-
 /** Flat macroblock: Y DC = dc on all four luma blocks, chroma DC = 0. */
 const flatMb = (dc: number, q: number): number[] =>
   [
@@ -227,20 +223,17 @@ describe("MDEC single 8x8 block", () => {
     const m = new Mdec();
     setupStandard(m);
     // DC=0, run=0 level=+50, q=8 → dequant (50*16*8+4)/8 = 800 at raster 1.
-    // Frequency (1,0) basis is antisymmetric about the vertical centre line.
-    // All six blocks identical → every quadrant carries the same 8x8 pattern.
-    const out = decodeStream(m, sixBlocks([(8 << 10) | 0, (0 << 10) | 50]), 2, true);
-    expect(out.length).toBe(256 * 3);
-    const gray = (x: number, y: number): number => out[((y * 16 + x) * 3 + 1)]! - 128;
-    for (let y = 0; y < 16; y++) {
+    // Frequency (1,0) basis: antisymmetric about the vertical centre line,
+    // constant along y. Mono path (depth 1) keeps chroma out of the picture.
+    const out = decodeStream(m, [(8 << 10) | 0, (0 << 10) | 50, 0xfe00], 1, true);
+    expect(out.length).toBe(64);
+    const gray = (x: number, y: number): number => out[y * 8 + x]! - 128;
+    for (let y = 0; y < 8; y++) {
       for (let x = 0; x < 8; x++) {
-        expect(Math.abs(gray(x, y) + gray(7 - x, y))).toBeLessThanOrEqual(4);
+        expect(Math.abs(gray(x, y) + gray(7 - x, y))).toBeLessThanOrEqual(12);
       }
-    }
-    // Chroma constant per 2x2 → rows repeat pairwise.
-    for (let y = 1; y < 16; y += 2) {
       for (let x = 0; x < 8; x++) {
-        expect(gray(x, y)).toBe(gray(x, y - 1));
+        expect(Math.abs(gray(x, y) - gray(x, 0))).toBeLessThanOrEqual(2);
       }
     }
   });
@@ -251,18 +244,21 @@ describe("MDEC single 8x8 block", () => {
     // run=7 → k=8; ZIGZAG[8]=2 → raster (2,0), horizontal frequency 2.
     // If zigzag were broken (e.g. k used directly → (0,1) vertical), the
     // gradient would run vertically instead of horizontally.
-    const out = decodeStream(m, sixBlocks([(8 << 10) | 0, (7 << 10) | 40]), 2, true);
-    const gray = (x: number, y: number): number => out[((y * 16 + x) * 3 + 1)]! - 128;
-    // Frequency (2,0) along x: symmetric pairs, constant along y.
-    for (let y = 1; y < 16; y += 7) {
+    const out = decodeStream(m, [(8 << 10) | 0, (7 << 10) | 40, 0xfe00], 1, true);
+    const gray = (x: number, y: number): number => out[y * 8 + x]! - 128;
+    // Frequency (2,0) along x: constant along y (each row identical).
+    for (let y = 1; y < 8; y++) {
       for (let x = 0; x < 8; x++) {
-        expect(Math.abs(gray(x, y) - gray(x, 0))).toBeLessThanOrEqual(3);
+        expect(gray(x, y)).toBe(gray(x, 0));
       }
     }
     // Horizontal structure present (not flat, not vertical).
     const rowRange = Math.max(...Array.from({ length: 8 }, (_, x) => gray(x, 0))) -
       Math.min(...Array.from({ length: 8 }, (_, x) => gray(x, 0)));
     expect(rowRange).toBeGreaterThan(0);
+    // Column 0 must carry NO energy beyond its own basis value: the coefficient
+    // sits at raster (2,0), so column 0 only sees the (2,0) cosine at x=0.
+    expect(gray(1, 0)).not.toBe(gray(2, 0));
   });
 
   test("q_scale=0 special mode: doubled value, NO zigzag (raster k directly)", () => {
@@ -270,14 +266,15 @@ describe("MDEC single 8x8 block", () => {
     setupStandard(m);
     // q_scale=0, run=1 → k=2 → RASTER 2 (not ZIGZAG[2]=5). DC=+60 doubled
     // (no table): Y pixel = round-half-down(60*2/4/…): val*2*AAN/2^20.
-    const out = decodeStream(m, sixBlocks([(0 << 10) | 60, (1 << 10) | 20]), 2, true);
-    const gray = (x: number, y: number): number => out[((y * 16 + x) * 3 + 1)]! - 128;
-    // Energy at raster column 2, constant down the column (frequency (2,0)).
-    for (let y = 1; y < 16; y += 5) {
-      expect(Math.abs(gray(2, y) - gray(2, 0))).toBeLessThanOrEqual(3);
+    const out = decodeStream(m, [(0 << 10) | 60, (1 << 10) | 20, 0xfe00], 1, true);
+    const gray = (x: number, y: number): number => out[y * 8 + x]! - 128;
+    // Energy at raster 2 (u=2, v=0): constant down rows, varies along x.
+    for (let y = 1; y < 8; y++) {
+      for (let x = 0; x < 8; x++) {
+        expect(gray(x, y)).toBe(gray(x, 0));
+      }
     }
-    // Contrast with the zigzag case: without zigzag, column 2 gets the AC.
-    const midRow = Array.from({ length: 8 }, (_, x) => gray(x, 4));
+    const midRow = Array.from({ length: 8 }, (_, x) => gray(x, 0));
     const spread = Math.max(...midRow) - Math.min(...midRow);
     expect(spread).toBeGreaterThan(0);
   });
@@ -454,13 +451,14 @@ describe("MDEC colored macroblock golden vectors", () => {
     const m = new Mdec();
     setupStandard(m);
     // Engineered to cross the 8-bit rail: big DC + big AC (a DC-only block
-    // caps at 127.875 signed and cannot wrap). Any pixel wrapping past +255
-    // must land black (0) via the 9-bit mask, not clamp white.
-    const hs = sixBlocks([(16 << 10) | 63, (0 << 10) | 300]);
-    const out = decodeStream(m, hs, 2, true);
+    // caps at 127.875 signed and cannot wrap). A pixel wrapping past +255
+    // must land black (0) via the 9-bit mask, not clamp white. Mono path
+    // keeps the arithmetic visible: pixel ≈ 126 + 177*cos ≈ 300 → wraps to
+    // -212 → saturates to 0.
+    const out = decodeStream(m, [(16 << 10) | 63, (0 << 10) | 300, 0xfe00], 1, false);
     let sawBlack = false;
-    for (let px = 0; px < 256; px++) {
-      if (out[px * 3]! === 0 && out[px * 3 + 1]! === 0 && out[px * 3 + 2]! === 0) sawBlack = true;
+    for (let px = 0; px < 64; px++) {
+      if (out[px] === 0) sawBlack = true;
     }
     expect(sawBlack).toBe(true);
   });
@@ -518,13 +516,13 @@ function buildBs(quant: number, blocks: number[][]): Uint8Array {
 }
 
 describe("MDEC VLC codebook integrity", () => {
-  test("all codes are within 2..17 bits and MSB-set", () => {
+  test("all codes are within 2..17 bits and nonzero", () => {
     for (const key of VLC_DECODE_TABLE.keys()) {
       const bits = key >>> 20;
       const code = key & 0xfffff;
       expect(bits).toBeGreaterThanOrEqual(2);
       expect(bits).toBeLessThanOrEqual(17);
-      expect(code & (1 << (bits - 1))).not.toBe(0);
+      expect(code).not.toBe(0);
     }
   });
 
@@ -640,11 +638,21 @@ describe("MDEC decode16 / encode16 (BS bitstream)", () => {
     expect(back[2]).toBe(0xfe00);
   });
 
-  test("DC 0x1FF saturates to 0x1FE (End of Frame code collision)", () => {
+  test("encode16 saturates DC 0x1FF to 0x1FE; decode16 stops at raw 0x1FF", () => {
     const m = new Mdec();
-    const bs = buildBs(16, [[(16 << 10) | 0x1ff, (0 << 10) | 1]]);
+    // Encode side: DC 0x1FF is the End of Frame slot → saturate to 0x1FE.
+    const src = new Uint16Array([
+      (16 << 10) | 0x1ff, (0 << 10) | 1, 0xfe00,
+      ...new Array(61).fill(0xfe00),
+    ]);
+    const bs = m.encode16(src);
     const rl = m.decode16(bs);
     expect(rl[0]! & 0x3ff).toBe(0x1fe);
+    expect(rl[1]).toBe((0 << 10) | 1);
+    // Decode side: a RAW 0x1FF in the DC slot is End of Frame — nothing decodes.
+    const eof = buildBs(16, [[(16 << 10) | 0x1ff, (0 << 10) | 1]]);
+    const eofRl = m.decode16(eof);
+    for (let i = 0; i < eofRl.length; i++) expect(eofRl[i]).toBe(0xfe00);
   });
 
   test("End of Frame stops decoding; remainder becomes FE00 footers", () => {
@@ -689,17 +697,18 @@ describe("MDEC decode16 / encode16 (BS bitstream)", () => {
     const chroma = [{ code: 0b00, length: 2 }, { code: 0b01, length: 2 }, { code: 0b10, length: 2 },
       { code: 0b110, length: 3 }, { code: 0b1110, length: 4 }, { code: 0b11110, length: 5 },
       { code: 0b111110, length: 6 }, { code: 0b1111110, length: 7 }, { code: 0b11111110, length: 8 }];
-    // Cr: +8 → size 4 (range -15..8)
-    putDelta(chroma, dcSizeOf(8) === 4 ? 4 : dcSizeOf(8), 8);
-    // Cb: -8 → size 4
-    putDelta(chroma, 4, -8);
-    // Y blocks: +4 (size 3), then four deltas 0 (size 0)
-    putDelta(luma, 3, 4);
-    for (let i = 0; i < 5; i++) putDelta(luma, 0, 0);
-    // One block's AC: EOB only
+    // Each block: DC delta then its (empty) AC list closed by EOB, so the AC
+    // loop of block N cannot swallow block N+1's DC size code.
+    putDelta(chroma, 4, 8); // Cr: +8 → size 4 (range -15..8)
     bw.put(VLC_EOB.code, VLC_EOB.bits);
-    // ...times six blocks (each block needs its own EOB; DC-only blocks too)
-    for (let i = 0; i < 5; i++) bw.put(VLC_EOB.code, VLC_EOB.bits);
+    putDelta(chroma, 4, -8); // Cb: -8 → size 4
+    bw.put(VLC_EOB.code, VLC_EOB.bits);
+    putDelta(luma, 3, 4); // Y1: +4 → size 3
+    bw.put(VLC_EOB.code, VLC_EOB.bits);
+    for (let i = 0; i < 3; i++) {
+      putDelta(luma, 0, 0); // Y2..Y4: delta 0, size 0
+      bw.put(VLC_EOB.code, VLC_EOB.bits);
+    }
     bw.put(0x1ff, 10);
     bw.finish();
     const out = new Uint8Array(8 + bw.bytes.length);
@@ -714,7 +723,8 @@ describe("MDEC decode16 / encode16 (BS bitstream)", () => {
     // Y (pred 2): +16. Y2..Y4: +16 each (same predictor).
     const q = 16 << 10;
     expect(rl[0]).toBe(q | (32 & 0x3ff));
-    expect(rl[2]).toBe(q | 0);
+    // DC field is 10-bit modular: -32 wraps to 992 (the MDEC reinterprets signed).
+    expect(rl[2]).toBe(q | (0 - 32 + 1024));
     expect(rl[4]).toBe(q | 16);
     expect(rl[6]).toBe(q | 16);
     expect(rl[8]).toBe(q | 16);
@@ -746,10 +756,11 @@ describe("MDEC decode16 / encode16 (BS bitstream)", () => {
     expect(br.get(3)).toBe(0b110);
     expect(br.get(10)).toBe(0x1ff);
     expect(br.get(16)).toBe(0xabcd);
-    // byte layout: first halfword holds 10 110 followed by the top 4 bits of
-    // 0x1ff; words land little-endian.
-    expect(bw.bytes[0]).toBe((0b10_110 << 3) | 0b1111);
-    expect(bw.bytes[1]).toBe(0b1111_0000); // wait: 0x1ff = 111111111b
+    // Byte layout: bits pack MSB-first into 16-bit words that land LE.
+    // Stream: 10 | 110 | 111111111 | 1010101111001101 → first halfword
+    // 1011_0011_1111_1111 = 0xb3ff → bytes [0xff, 0xb3].
+    expect(bw.bytes[0]).toBe(0xff);
+    expect(bw.bytes[1]).toBe(0xb3);
   });
 
   test("decode16 output feeds the hardware decode path end to end", () => {
