@@ -53,3 +53,25 @@ describe("Phase-1 boot: hello EXE end-to-end (loader → CPU → bus → GPU)", 
     expect(boot()).toBe(boot());
   });
 });
+
+describe("Machine snapshot → restore equivalence (zsave/zload spec)", () => {
+  test("snapshot → restore → continue == uninterrupted run", () => {
+    const { bytes } = buildHelloExe(0x7c1f);
+    const exe = parsePsExe(bytes);
+    const a = new Machine();
+    a.loadExe(bytes, exe.pc0, exe.t_addr, exe.data);
+    for (let i = 0; i < 50; i++) a.runSlice(1000);
+    const snap = a.snapshot();
+    for (let i = 0; i < 50; i++) a.runSlice(1000); // continue
+    const b = new Machine();
+    b.loadExe(bytes, exe.pc0, exe.t_addr, exe.data);
+    for (let i = 0; i < 50; i++) b.runSlice(1000);
+    b.restore(snap);
+    for (let i = 0; i < 50; i++) b.runSlice(1000);
+    expect(b.cpu.pc).toBe(a.cpu.pc);
+    expect(b.cpu.cycles).toBe(a.cpu.cycles);
+    expect(Array.from(b.cpu.r)).toEqual(Array.from(a.cpu.r));
+    expect(b.gpu.vram[0]).toBe(a.gpu.vram[0]);
+    expect(b.gpu.hashFrame()).toBe(a.gpu.hashFrame());
+  });
+});

@@ -127,4 +127,63 @@ export class Machine {
     this.mem.ram.set(data, tAddr);
     this.cpu.reset(pc0);
   }
+
+  /** Full-state snapshot (zsave_snapshot_* spec): all typed-array state. */
+  snapshot(): MachineSnapshot {
+    const g = this.gteCore;
+    return {
+      ram: this.mem.ram.slice(),
+      parallel: this.mem.parallel.slice(),
+      scratchpad: this.mem.scratchpad.slice(),
+      bios: this.mem.bios.slice(),
+      vram: this.gpu.vram.slice(),
+      cpu: {
+        r: [...this.cpu.r], hi: this.cpu.hi, lo: this.cpu.lo,
+        pc: this.cpu.pc, nextPc: this.cpu.nextPc,
+        cp0: [...this.cpu.cp0], cycles: this.cpu.cycles,
+        loadDelay: { ...this.cpu.loadDelay },
+        inBranchDelay: this.cpu.inBranchDelay,
+      },
+      gte: {
+        v: g.v.slice(), dr: g.dr.slice(), cr: g.cr.slice(),
+      },
+      rcnt: this.rcnt.regs.slice(),
+      irqStatus: this.irqStatus, irqMask: this.irqMask,
+    };
+  }
+
+  restore(s: MachineSnapshot): void {
+    this.mem.ram.set(s.ram);
+    this.mem.parallel.set(s.parallel);
+    this.mem.scratchpad.set(s.scratchpad);
+    this.mem.bios.set(s.bios);
+    this.gpu.vram.set(s.vram);
+    this.cpu.r.set(s.cpu.r);
+    this.cpu.hi = s.cpu.hi; this.cpu.lo = s.cpu.lo;
+    this.cpu.pc = s.cpu.pc; this.cpu.nextPc = s.cpu.nextPc;
+    this.cpu.cp0.set(s.cpu.cp0);
+    this.cpu.cycles = s.cpu.cycles;
+    this.cpu.loadDelay = { ...s.cpu.loadDelay };
+    this.cpu.inBranchDelay = s.cpu.inBranchDelay;
+    this.gteCore.v.set(s.gte.v);
+    this.gteCore.dr.set(s.gte.dr);
+    this.gteCore.cr.set(s.gte.cr);
+    this.rcnt.regs.set(s.rcnt);
+    this.irqStatus = s.irqStatus;
+    this.irqMask = s.irqMask;
+  }
+}
+
+export interface MachineSnapshot {
+  ram: Uint8Array; parallel: Uint8Array; scratchpad: Uint8Array; bios: Uint8Array;
+  vram: Uint16Array;
+  cpu: {
+    r: number[]; hi: number; lo: number; pc: number; nextPc: number;
+    cp0: number[]; cycles: number;
+    loadDelay: { slot: number; reg: number; value: number };
+    inBranchDelay: boolean;
+  };
+  gte: { v: Int16Array; dr: Int32Array; cr: Uint32Array };
+  rcnt: Uint16Array;
+  irqStatus: number; irqMask: number;
 }
