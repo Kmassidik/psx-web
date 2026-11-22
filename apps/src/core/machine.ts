@@ -200,14 +200,16 @@ export class Machine {
 
   /** Populate A(0xA0)/B(0xB0)/C(0xC0) trampolines: lui $t1,<table>; jr $ra. */
   installHleVectors(): void {
-    const stub = (table: number): number[] => [
-      (0x0f << 26) | (9 << 16) | (table & 0xffff),
-      (0x08 << 26) | (31 << 21),
-      0,
+    // stub: syscall; jr $ra — the game sets $t1 (table: A=1/B=2/C=3, encoded
+    // in bits 16-17 of the jump target) and $t1 low... the SYSCALL hits the
+    // CPU's HLE fast path which dispatches on the table + fn.
+    const stub = (): number[] => [
+      0x0000_000c, // SYSCALL
+      (0x08 << 26) | (31 << 21), // JR $ra
     ];
     for (const [va, table] of [[0xa0, 1], [0xb0, 2], [0xc0, 3]] as const) {
       const phys = va - 0x8000_0000;
-      stub(table).forEach((w, i) => this.mem.store32(phys + 4 * i, w));
+      stub().forEach((w, i) => this.mem.store32(phys + 4 * i, w));
     }
   }
 

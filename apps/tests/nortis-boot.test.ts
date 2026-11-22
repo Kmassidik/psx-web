@@ -14,10 +14,9 @@ describe("Nortis (real homebrew game) boot", () => {
     let slices = 0;
     let ok = true;
     for (let i = 0; i < 600 && ok; i++) { ok = m.runSlice(20_000); slices++; }
-    // 12M cycles of REAL game code executed (gfx init, pad init, font upload,
-    // main loop); the game then hit an unimplemented opcode (tracked in
-    // Phase-3.5). BIOS-free HLE v1 keeps the main loop running for the full
-    // slice budget first.
+    // Nortis boots BIOS-free: crt0 completes, gfx/pad init runs, and the
+    // game reaches its first B_open disc-I/O call (loops retrying because
+    // BIOS FS emulation over CDROM sectors is Phase-3.5).
     expect(m.cpu.cycles).toBeGreaterThanOrEqual(12_000_000);
     void slices;
     void exe;
