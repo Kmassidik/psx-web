@@ -4,8 +4,9 @@
  * bits 0-4 R, 5-9 G, 10-14 B, bit 15 = STP). No imports, no DOM.
  *
  * Conventions / documented notes:
- * - Vertex coords: sign-extended from 11-bit X / 9-bit Y (no$psx); pixels
- *   outside the drawing area are discarded. Drawing area read from
+ * - Vertex coords: both X and Y sign-extended from 11 bits (no$psx
+ *   Rendering Attributes: X bits 0-10, Y bits 16-26, each -1024..+1023);
+ *   pixels outside the drawing area are discarded. Drawing area read from
  *   (gpu as any).clipX1/clipY1/clipX2/clipY2 (inclusive), default
  *   0/0/1023/511, hard-clamped to VRAM bounds.
  * - Rasterization: scanline integer DDA. ALL interpolation runs in 16.16
@@ -110,7 +111,7 @@ function mulDiv(a: number, b: number, den: number): number {
 function decVert(p: PrimVert): Vert {
   return {
     x: ((p.x & 0x7ff) << 21) >> 21,
-    y: ((p.y & 0x1ff) << 23) >> 23,
+    y: ((p.y & 0x7ff) << 21) >> 21,
     r: p.r & 255,
     g: p.g & 255,
     b: p.b & 255,
@@ -342,7 +343,7 @@ function drawTri(
 
 /** Drawing area clip from gpu registers (if present), clamped to VRAM. */
 function readClip(gpu: { vram: Uint16Array }): ClipRect {
-  const g = gpu as Partial<Record<string, number | undefined>>;
+  const g = gpu as unknown as Partial<Record<string, number | undefined>>;
   const rd = (k: string, d: number): number =>
     typeof g[k] === "number" ? (g[k] as number) : d;
   const clamp = (v: number, lo: number, hi: number): number =>
