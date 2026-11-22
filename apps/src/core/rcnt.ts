@@ -20,16 +20,18 @@ export class Rcnt {
       if (t === 1 && gate !== 0) step = gate === 1 ? 0 : 1; // hblank gating t1
       if (t === 2 && gate !== 0) step = 1;
       let v = this.regs[t * 3]!;
-      for (let i = 0; i < cycles; i += step) {
+      let done = false;
+      for (let i = 0; i < cycles && !done; i += step) {
         v = (v + 1) & 0xffff;
         if (v === target && target !== 0 && (mode & 0x100)) {
-          this.regs[t * 3] = v;
           this.irqFire(3 + t); // IRQ lines 3,4,5
           this.regs[t * 3 + 1] = (mode & 0xffff) | 0x400; // target reached flag
-          v = (mode & 0x1000) ? v : 0; // zero-return
-          break;
+          if (mode & 0x1000) {
+            v = 0; // zero-return: wrap and keep counting this slice
+          } else {
+            done = true; // stop-at-target: freeze until next sync
+          }
         }
-        if (v === 0 && (mode & 0x1000)) break;
       }
       this.regs[t * 3] = v;
     }

@@ -301,11 +301,17 @@ export class Cpu {
       return false;
     }
     const v = this.r[rt]!;
+    if (width === 32) {
+      // MMIO ports first: 0x1F801000+ window (GPU/IRQ/DMA) → bus hooks.
+      if (va >= 0x1f80_1000 && va <= 0x1f80_1fff && this.ports.write32(va, v)) return true;
+      this.mem.store32(va, v);
+      return true;
+    }
     if (width === 8) this.mem.store8(va, v);
-    else if (width === 16) {
+    else {
       this.mem.store8(va, v & 0xff);
       this.mem.store8(va + 1, (v >>> 8) & 0xff);
-    } else this.mem.store32(va, v);
+    }
     return true;
   }
 

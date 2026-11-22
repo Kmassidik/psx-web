@@ -59,7 +59,6 @@ const RTPS_SF1_LM1 = 0x0018_0401; // + lm bit 10
 const RTPT_SF1 = 0x0028_0030; // RTPT sf=1 (no$psx 0280030h)
 const MVMVA_BASE = 0x0000_0012; // cv=0 (TR), sf=0; other fields ORed in
 const NCDS_SF1 = 0x0048_0013; // NCDS sf=1 lm=0
-const NCDT_SF1 = 0x00E8_0416; // no$psx 0F80416h → 0x00F80416; kept explicit below
 
 // ---------------------------------------------------------------------------
 // 1. RTPS against hand-computed exact values (zero / ±1 / small inputs)
@@ -261,12 +260,17 @@ describe("RTPT equals RTPS × 3", () => {
 
       a.execute(RTPT_SF1);
       // Reference: three separate RTPS, feeding each vertex through V0
-      // (RTPS only ever reads V0), preserving V1/V2 registers.
+      // (RTPS only ever reads V0), preserving V1/V2 registers. Each RTPS
+      // clears FLAG first (one clear per command), so the RTPT-equivalent
+      // flag is the OR of the three runs (RTPT itself clears only once).
       b.execute(RTPS_SF1); // V0
+      const f0 = b.flag;
       b.v[0] = b.v[3]!; b.v[1] = b.v[4]!; b.v[2] = b.v[5]!; // V1 → V0
       b.execute(RTPS_SF1);
+      const f1 = b.flag;
       b.v[0] = b.vx2; b.v[1] = b.vy2; b.v[2] = b.vz2; // V2 → V0
       b.execute(RTPS_SF1);
+      const flagAccum = f0 | f1 | b.flag;
 
       expect(a.mac0).toBe(b.mac0);
       expect(a.mac1).toBe(b.mac1);
@@ -284,8 +288,9 @@ describe("RTPT equals RTPS × 3", () => {
       expect(a.sz2).toBe(b.sz2);
       expect(a.sz3).toBe(b.sz3);
       // FLAG accumulates across RTPT's three vertices (clear once per
-      // command); 3×RTPS clears per call — final FLAG can differ. All
-      // data registers must still match exactly.
+      // command) while each reference RTPS clears per call, so compare
+      // against the OR of the three runs; bit 31 is derived from the chain.
+      expect((a.flag >>> 0)).toBe((flagAccum >>> 0));
     }
   });
 });

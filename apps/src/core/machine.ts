@@ -9,11 +9,22 @@ import { Cpu } from "./cpu";
 import { Memory } from "./memory";
 import { Gpu } from "./gpu";
 import { Rcnt } from "./rcnt";
+import { GTE } from "./gte";
 
 export class Machine {
   readonly mem = new Memory();
   readonly gpu = new Gpu();
   readonly rcnt = new Rcnt();
+  /** cop2 adapter: MFC2/MTC2 route GTE data regs (dr[r]) + control fallback. */
+  readonly gte = {
+    execute: (instr: number) => this.gteCore.execute(instr),
+    mfc2: (r: number) => (r < 16 ? (this.gteCore.dr[r]! | 0) : (this.gteCore.cr[r - 16]! | 0)),
+    mtc2: (r: number, v: number) => {
+      if (r < 16) this.gteCore.dr[r] = v | 0;
+      else this.gteCore.cr[r - 16] = v >>> 0;
+    },
+  };
+  private readonly gteCore = new GTE();
   irqStatus = 0;
   irqMask = 0;
   readonly cpu: Cpu;
@@ -25,14 +36,8 @@ export class Machine {
   private ch6Base = 0; private ch6Block = 0; private ch6Ctrl = 0; private ch6Running = false;
 
   constructor() {
-    // Minimal GTE stand-in until the real unit lands (Phase 1 proper):
-    const gteStub = {
-      execute: (_instr: number) => {},
-      mfc2: (_r: number) => 0,
-      mtc2: (_r: number, _v: number) => {},
-    };
     this.rcnt.irqFire = (line) => { this.raiseIrq(1 << line); };
-    this.cpu = new Cpu(this.mem, this.rcnt, gteStub, {
+    this.cpu = new Cpu(this.mem, this.rcnt, this.gte, {
       read32: (va) => this.portRead(va),
       write32: (va, v) => this.portWrite(va, v),
     });

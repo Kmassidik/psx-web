@@ -27,8 +27,8 @@ export class Gpu {
     if (this.cmdLeft > 0) { this.gp0Param(w); return; }
     this.gp0Mode = (w >>> 24) & 0xff;
     switch (this.gp0Mode) {
-      case 0x02: // Fill VRAM: color, x,y, w,h
-        this.cmdWords = [w]; this.cmdLeft = 4; break;
+      case 0x02: // Fill VRAM: cmd color + x,y + w,h → 2 param words
+        this.cmdWords = [w]; this.cmdLeft = 2; break;
       case 0xa0: // Load image: x,y, w,h then data
         this.cmdWords = [w]; this.cmdLeft = 2; break;
       case 0xc0: // Store image (CPU read): x,y,w,h
@@ -47,9 +47,11 @@ export class Gpu {
         if (--this.cmdLeft === 0) {
           const c = this.cmdWords[0]!;
           const x = (this.cmdWords[1]! >>> 0) & 0x3ff, y = this.cmdWords[1]! >>> 16 & 0x1ff;
-          const wd = this.cmdWords[2]! & 0x3ff, ht = this.cmdWords[2]! >>> 16 & 0x1ff;
+          // no$psx FillVRAM: w = bits0-9, h = bits16-25; 0 means max (1024/512).
+          const wd = this.cmdWords[2]! & 0x3ff || 0x400;
+          const ht = (this.cmdWords[2]! >>> 16) & 0x1ff || 0x200;
           this.fillColor = c & 0x7fff;
-          this.fillRect(x, y, Math.max(1, wd), Math.max(1, ht));
+          this.fillRect(x, y, wd, ht);
         }
         break;
       }
@@ -109,14 +111,17 @@ export class Gpu {
 
   /** Convert current display area to RGBA for the canvas (per-frame, once). */
   composeFrame(): void {
-    // Phase 1: 0,0..640x480 1:1. 15bpp → 8888.
+    // Phase 1: 0,0..640x480 1:1. 15bpp BGR → 8888 RGBA, 5→8 bit expand.
     const s = this.screen;
     for (let y = 0; y < this.gpur2 && y < 480; y++) {
       let o = y * 640 * 4, vi = y * VRAM_W;
       for (let x = 0; x < this.gpur1 && x < 640; x++, o += 4) {
         const p = this.vram[vi + x]!;
-        s[o] = (p & 31) * 8 + (p & 31) >> 2; s[o + 1] = ((p >> 5) & 31) * 8 + ((p >> 5) & 31) >> 2;
-        s[o + 2] = ((p >> 10) & 31) * 8 + ((p >> 10) & 31) >> 2; s[o + 3] = 255;
+        const r5 = p & 31, g5 = (p >> 5) & 31, b5 = (p >> 10) & 31;
+        s[o] = (r5 << 3) | (r5 >> 2);
+        s[o + 1] = (g5 << 3) | (g5 >> 2);
+        s[o + 2] = (b5 << 3) | (b5 >> 2);
+        s[o + 3] = 255;
       }
     }
   }

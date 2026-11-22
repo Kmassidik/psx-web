@@ -506,8 +506,8 @@ export class GTE {
   // -- commands -------------------------------------------------------------
 
   /**
-   * RTPS core (no$psz 0180001h formula block; typo-proof citation:
-   * no$psx "COP2 0180001h - RTPS - Perspective Transformation (single)").
+   * RTPS core (no$psx "COP2 0180001h - RTPS - Perspective Transformation
+   * (single)" formula block).
    * `last` selects the DQA/DQB depth-cue tail (true for RTPS and for the
    * third vertex of RTPT — DuckStation/specced behavior).
    */
