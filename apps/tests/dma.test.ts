@@ -146,10 +146,10 @@ describe("DMA ch2 GPU", () => {
     const bus = new TestBus();
     const d = new Dma();
     // node0 @ 0x200: hdr = next 0x400 | 2 words; node1 @ 0x400: terminator | 1 word
-    seed(bus, 0x80, 0x400_0002); // hdr @ 0x200
+    seed(bus, 0x80, 0x0200_0400); // hdr @ 0x200
     seed(bus, 0x81, 0xaaaa_0001);
     seed(bus, 0x82, 0xaaaa_0002);
-    seed(bus, 0x100, 0xff_ffff_01); // hdr @ 0x400: next=terminator, 1 word
+    seed(bus, 0x100, 0x01ff_ffff); // hdr @ 0x400: next=terminator, 1 word
     seed(bus, 0x101, 0xbbbb_0003);
     d.regs[2 * 3] = 0x200;
     d.regs[2 * 3 + 2] = 0x0100_0400 | 0x0100_0000; // sync=2 list, start
@@ -164,8 +164,8 @@ describe("DMA ch2 GPU", () => {
   test("linked-list with words=0 header advances to next node only", () => {
     const bus = new TestBus();
     const d = new Dma();
-    seed(bus, 0x40, 0x300_0000); // @0x100: 0 words, next 0x300
-    seed(bus, 0xc0, 0xff_ffff_02); // @0x300: terminator, 2 words
+    seed(bus, 0x40, 0x0000_0300); // @0x100: 0 words, next 0x300
+    seed(bus, 0xc0, 0x02ff_ffff); // @0x300: terminator, 2 words
     seed(bus, 0xc1, 0x1111);
     seed(bus, 0xc2, 0x2222);
     d.regs[2 * 3] = 0x100;

@@ -26,7 +26,7 @@ export class Cdrom {
   private paramFifo: number[] = [];
   private respFifo: number[] = []; // 16-byte response buffer
   private lastResp: number[] = []; // last response for pad/restart reads
-  private respPos = 0; // read position while padding/restarting
+  private respIdx = 0; // read position while padding/restarting
   // Queued responses: first delivered immediately (pushResponse), second on
   // ack (no$psx Mainloop/Responses: INT queue is one-deep per class).
   private queued: Array<{ int: number; data: number[] }> = [];
@@ -54,7 +54,7 @@ export class Cdrom {
     this.paramFifo.length = 0;
     this.respFifo.length = 0;
     this.lastResp.length = 0;
-    this.respPos = 0;
+    this.respIdx = 0;
     this.queued.length = 0;
     this.cmd = -1;
     this.cmdParams.length = 0;
@@ -128,16 +128,19 @@ export class Cdrom {
       case 1:
       case 2:
       case 3: {
-        // Response fifo read (mirrors at 1801/1802/1803). no$psx: 00h-pad to
-        // the end of 16 bytes, then restart at the first response byte.
-        if (this.respFifo.length === 0) {
-          if (this.lastResp.length === 0) return 0;
-          this.respPos = (this.respPos + 1) % 16;
-          return this.lastResp[this.respPos % this.lastResp.length] ?? 0;
+        // Response fifo read (mirrors at 1801/1802/1803). no$psx: after the
+        // last real byte the buffer is 00h-padded to the end of 16 bytes,
+        // then restarts at the first response byte.
+        if (this.respFifo.length > 0) {
+          const b = this.respFifo.shift()!;
+          this.respIdx = this.lastResp.length - this.respFifo.length;
+          return b;
         }
-        this.lastResp = this.respFifo.slice();
-        this.respPos = 0;
-        return this.respFifo.shift()!;
+        if (this.lastResp.length === 0) return 0;
+        this.respIdx = (this.respIdx + 1) % 16;
+        return this.respIdx < this.lastResp.length
+          ? this.lastResp[this.respIdx]!
+          : 0;
       }
     }
     return 0; // unreachable
@@ -180,15 +183,25 @@ export class Cdrom {
    * ReadN/ReadS data INT1 -> next exec() after setSectorData.
    */
   exec(): void {
-    // 1. pending data INT1 wins (Read stream)
-    if (this.dataPending && this.queued.length === 0 && !this.busy) {
+    // 1. pending data INT1 wins (Read stream), only with no INT pending
+    if (
+      this.dataPending &&
+      this.queued.length === 0 &&
+      !this.busy &&
+      (this.regs[5]! & 0x07) === 0
+    ) {
       this.dataPending = false;
       this.stat = (this.stat & ~0xe0) | 0x20 | (this.motorOn ? 0x02 : 0); // Read
       this.pushResponse(1, [this.stat]);
       return;
     }
-    // 2. queued second response
-    if (this.secondPending && this.queued.length > 0 && !this.busy) {
+    // 2. queued second response (only when no INT is pending/acknowledged)
+    if (
+      this.secondPending &&
+      this.queued.length > 0 &&
+      !this.busy &&
+      (this.regs[5]! & 0x07) === 0
+    ) {
       const q = this.queued.shift()!;
       this.secondPending = false;
       this.pushResponse(q.int, q.data);
@@ -402,6 +415,8 @@ export class Cdrom {
   /** Deliver a response now: load FIFO, set IRQ flag, raise CDROM IRQ. */
   private pushResponse(int: number, data: number[]): void {
     this.respFifo = data.slice(0, 16);
+    this.lastResp = data.slice(0, 16);
+    this.respIdx = 0;
     this.regs[5] = int & 0x07; // Interrupt Flag read value (1F801803 idx1)
     this.regs[4] = this.regs[4]! | 0x1f; // IEN default: all set
     this.irqFire(2); // CDROM IRQ line
