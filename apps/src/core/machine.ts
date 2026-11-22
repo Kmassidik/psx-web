@@ -20,6 +20,7 @@ import { Gpu, VRAM_W, VRAM_H } from "./gpu";
 import { Rcnt } from "./rcnt";
 import { GTE } from "./gte";
 import { Dma } from "./dma";
+import { hleSyscall } from "./syscall";
 import { Cdrom } from "./cdrom";
 import { Spu } from "./spu";
 import { Mdec } from "./mdec";
@@ -43,10 +44,12 @@ export class Machine {
   readonly cpu: Cpu;
   /** 7-channel DMA controller (ch0 MDECin … ch6 OTC), DmaUnit delivery. */
   readonly dma = new Dma();
-  /** CDROM controller (1F801800-1F801803 + IRQ line 2), CdromUnit delivery. */
+  /** CDROM controller (1F801800 + IRQ line 2). */
   readonly cdrom = new Cdrom();
-  /** SPU (1F801C00+ u16 regs, IRQ line 9), SpuUnit delivery. */
+  /** SPU (1F801C00+ u16 regs, IRQ line 9). */
   readonly spu = new Spu();
+  /** CDROM controller (1F801800-1F801803 + IRQ line 2), CdromUnit delivery. */
+  /** SPU (1F801C00+ u16 regs, IRQ line 9), SpuUnit delivery. */
   /** MDEC (1F801820+), MdecUnit delivery. */
   readonly mdec = new Mdec();
 
@@ -58,7 +61,7 @@ export class Machine {
     this.cpu = new Cpu(this.mem, this.rcnt, this.gte, {
       read32: (va) => this.portRead(va),
       write32: (va, v) => this.portWrite(va, v),
-    });
+    }, (table, fn) => hleSyscall(table, fn) ?? 0);
   }
 
   /** DmaBus adapter: DMA reads/writes RAM words and drives GP0. */
@@ -170,7 +173,36 @@ export class Machine {
 
   loadExe(bytes: Uint8Array, pc0: number, tAddr: number, data: Uint8Array): void {
     this.mem.ram.set(data, tAddr);
+    this.installHleVectors(); // BIOS-free boot: A/B/C call vectors
     this.cpu.reset(pc0);
+    // crt0 register state the BIOS normally sets before _start.
+    this.cpu.r[28] = 0x801f_ff00; // $gp
+    this.cpu.r[29] = 0x801f_ff00; // $sp
+    this.cpu.r[30] = 0x801f_ff00; // $fp
+    this.cpu.r[31] = 0x8000_0068; // $ra → exit-loop stub
+    this.cpu.r[5] = -1; // $r5 < 0: crt0's BLTZ preamble takes the save path
+    this.mem.store32(0x100, 0x1000_0002); // beq $0,$0,+2 = spin
+    this.mem.store32(0x104, 0); // delay-slot nop
+    // crt0 leaves restore $ra from their stack frames; slots never written
+    // read 0 → 'jr 0' crash. Fill the entire stack region (below $sp) with
+    // the exit-loop address so any never-written slot returns to the
+    // BIOS-equivalent spin instead.
+    for (let a = 0x801f_e000; a < 0x801f_ff00; a += 4) {
+      this.mem.store32(a, 0x8000_0100);
+    }
+  }
+
+  /** Populate A(0xA0)/B(0xB0)/C(0xC0) trampolines: lui $t1,<table>; jr $ra. */
+  installHleVectors(): void {
+    const stub = (table: number): number[] => [
+      (0x0f << 26) | (9 << 16) | (table & 0xffff),
+      (0x08 << 26) | (31 << 21),
+      0,
+    ];
+    for (const [va, table] of [[0xa0, 1], [0xb0, 2], [0xc0, 3]] as const) {
+      const phys = va - 0x8000_0000;
+      stub(table).forEach((w, i) => this.mem.store32(phys + 4 * i, w));
+    }
   }
 
   /** load_bios spec (0x433540): fread(psxBIOS, 1, 0x80000) — 512 KiB max. */

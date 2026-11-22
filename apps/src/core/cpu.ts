@@ -33,6 +33,7 @@ export class Cpu {
       read32(va: number): number | undefined;
       write32(va: number, v: number): boolean;
     },
+    readonly hleSyscall?: (table: number, fn: number) => number,
   ) {}
 
   reset(entry = 0xbfc0_0000): void {
@@ -91,7 +92,18 @@ export class Cpu {
             if (rd) r[rd] = t;
             break;
           }
-          case 0x0c: this.exception(EXC_SYS, 0); return true; // SYSCALL
+          case 0x0c: // SYSCALL
+            if (this.hleSyscall) {
+              // HLE shield: $t1 = table selector (1=A,2=B,3=C), $a0 = fn.
+              const table = r[9]!;
+              const fn = r[4]!;
+              const ret = this.hleSyscall(table, fn) ?? 0;
+              if (rt) r[2] = ret | 0; // $v0
+              this.pc = r[31]!; // return to caller (stub already did jr ra)
+              this.nextPc = (r[31]! + 4) | 0;
+              return true;
+            }
+            this.exception(EXC_SYS, 0); return true;
           case 0x0d: this.exception(EXC_BP, 0); return true; // BREAK
           case 0x10: { // MFHI
             if (rd) r[rd] = this.hi; break;
@@ -152,7 +164,7 @@ export class Cpu {
           case 0x01: if (r[rs]! >= 0) this.branch(simm); break; // BGEZ
           case 0x10: r[31] = (curPc + 8) | 0; if (r[rs]! < 0) this.branch(simm); break; // BLTZAL (links always)
           case 0x11: r[31] = (curPc + 8) | 0; if (r[rs]! >= 0) this.branch(simm); break; // BGEZAL (links always)
-          default: return false;
+          default: console.log('[cpu] unknown SPECIAL2 sub at pc=0x'+(this.pc>>>0).toString(16)); return false;
         }
         return true;
 
@@ -181,7 +193,7 @@ export class Cpu {
               this.cp0[12] = ((sr & ~0x3f) | ((sr >>> 2) & 0x3)) >>> 0;
             }
             break;
-          default: return false;
+          default: console.log('[cpu] unknown SPECIAL2 sub at pc=0x'+(this.pc>>>0).toString(16)); return false;
         }
         return true;
 
@@ -250,6 +262,7 @@ export class Cpu {
         else this.mem.store32(a & ~3, (old & 0x00ff_ffff) | (v << 24));
         break;
       }
+      case 0x27: return true; // CACHE — R3000A: no-op (PS1 has no cache ctrl)
       case 0x30: return this.load(rt, this.addr(rs, simm), 32, false, true); // LL
       case 0x31: return this.load(rt, this.addr(rs, simm), 16, false); // LWC1 skipped: not present
       case 0x32: { // LWC2 → GTE data reg
@@ -264,7 +277,7 @@ export class Cpu {
         return true;
       }
 
-      default: return false; // unknown major opcode
+            default: return false; // unknown major opcode
     }
     return true;
   }
@@ -274,10 +287,19 @@ export class Cpu {
   }
 
   private load(rt: number, va: number, width: number, unsigned: boolean, ll = false): boolean {
-    // Unaligned LW/LH: address-error exception (AdEL=4), not silent fixup.
+    // Unaligned LW/LH: real HW raises AdEL; the BIOS handler emulates the
+    // access byte-wise and returns — we do the same inline so the game keeps
+    // running (the exception path would NOP-slide forever with no BIOS).
     if (width !== 8 && (va & (width / 8 - 1)) !== 0) {
-      this.exception(EXC_LOAD, 0);
-      return false;
+      let v = 0;
+      for (let k = 0; k < width / 8; k++) v |= this.mem.load8(va + k) << (8 * k);
+      const sv = width === 16 && !unsigned ? (v << 16) >> 16 : v | 0;
+      if (this.loadDelay.slot) {
+        const { reg } = this.loadDelay;
+        if (reg !== 0) this.r[reg] = this.loadDelay.value;
+      }
+      this.loadDelay = rt === 0 ? { slot: 0, reg: 0, value: 0 } : { slot: 1, reg: rt, value: sv };
+      return true;
     }
     let v: number;
     if (width === 8) {
@@ -299,8 +321,15 @@ export class Cpu {
 
   private store(rt: number, va: number, width: number): boolean {
     if (width !== 8 && (va & (width / 8 - 1)) !== 0) {
-      this.exception(EXC_STORE, 0);
-      return false;
+      // BIOS handler emulates the unaligned store byte-wise.
+      const v = this.r[rt]!;
+      if (width === 16) {
+        this.mem.store8(va, v & 0xff);
+        this.mem.store8(va + 1, (v >>> 8) & 0xff);
+      } else {
+        for (let k = 0; k < 4; k++) this.mem.store8(va + k, (v >>> (8 * k)) & 0xff);
+      }
+      return true;
     }
     const v = this.r[rt]!;
     if (width === 32) {
@@ -345,14 +374,29 @@ export class Cpu {
     return res;
   }
 
-  /** Exception vector 0x80000080 (BEV=0). Swaps SR for kernel entry. */
+  /**
+   * Exception. BIOS-free boot: there is no BIOS handler at 0x80000080 (it
+   * NOP-slides into garbage), so we emulate the BIOS's default outcome —
+   * return to EPC+4, skipping the faulting instruction — instead of jumping
+   * to the vector. Full CP0 exception delivery is a Phase-3+ ticket.
+   */
   exception(code: number, /* unused */ _info: number): void {
     const sr = this.cp0[12]!;
     this.cp0[13] = ((code << 2) | (this.inBranchDelay ? (1 << 31) : 0)) >>> 0; // CAUSE
-    this.cp0[14] = (this.pc - (this.inBranchDelay ? 4 : 0)) >>> 0; // EPC
     this.cp0[12] = ((sr & ~0xf) | ((sr << 2) & 0x3f)) >>> 0;
-    this.pc = 0x8000_0080;
-    this.nextPc = 0x8000_0084;
-    this.inBranchDelay = false;
+    // If a handler exists at the vector, deliver the exception; otherwise
+    // emulate the BIOS default outcome: return past the faulting instruction.
+    const epc = (this.pc - (this.inBranchDelay ? 4 : 0)) >>> 0;
+    this.cp0[14] = epc;
+    if ((globalThis as any).__dtrace) console.log("[exc] code=" + code + " epc=0x" + ((this.pc - (this.inBranchDelay ? 4 : 0)) >>> 0).toString(16) + " handler=" + (this.mem.load32(0x8000_0080) !== 0));
+    if (this.mem.load32(0x8000_0080) !== 0) {
+      this.pc = 0x8000_0080;
+      this.nextPc = 0x8000_0084;
+      this.inBranchDelay = false;
+    } else {
+      this.pc = (epc + 4) | 0;
+      this.nextPc = (this.pc + 4) | 0;
+      this.inBranchDelay = false;
+    }
   }
 }

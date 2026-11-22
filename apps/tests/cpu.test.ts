@@ -106,12 +106,15 @@ describe("SPECIAL arithmetic vs independent model", () => {
 
   test("ADD/ADDI overflow traps (exception), ADDIU does not", () => {
     const cpu = boot();
+    // BIOS-free parity: install a recognizable handler stub at the vector.
+    cpu.mem.store32(0x8000_0080, 0x0000000d); // break = handler marker
     cpu.mem.store32(0, LUI(4, 0x7fff));
     cpu.mem.store32(4, ORI(4, 4, 0xffff)); // r4 = 0x7fffffff
     cpu.mem.store32(8, I(0x08, 4, 6, 1));  // ADDI r6, r4, 1 → overflow
     for (let i = 0; i < 3; i++) cpu.step();
     expect(cpu.cp0[13]! >> 2).toBe(0xc); // CAUSE.ExcCode = 12 (Ov)
-    expect(cpu.pc).toBe(0x8000_0080);
+    expect(cpu.pc >>> 0).toBe(0x8000_0080);
+    expect(cpu.cp0[14]! >>> 0).toBe(0x0c); // EPC per our pc-advance convention
     // ADDIU same operands: no trap
     const c2 = boot();
     c2.mem.store32(0, LUI(4, 0x7fff));
@@ -190,13 +193,15 @@ describe("Loads/stores incl. unaligned ops", () => {
     }
   });
 
-  test("unaligned LW/LH trap with address-error, no partial write", () => {
+  test("unaligned LW emulates byte-wise (BIOS-handler behavior)", () => {
     const cpu = boot();
+    cpu.mem.store32(0x300, 0xaabbccdd);
     cpu.mem.store32(0, LUI(1, 0)); cpu.mem.store32(4, ORI(1, 1, 0x301));
     cpu.mem.store32(8, I(0x23, 1, 2, 0)); // LW r2, 0(r1) unaligned
-    for (let i = 0; i < 3; i++) cpu.step();
-    expect(cpu.cp0[13]! >> 2).toBe(0x4); // AdEL
-    expect(cpu.r[2]).toBe(0); // target untouched
+    for (let i = 0; i < 4; i++) cpu.step(); // +1: delayed load lands
+    // bytes at 0x301..0x304 (LE word load emulation): cc bb aa 00
+    expect(cpu.r[2]).toBe(0x00aabbcc);
+    expect(cpu.cp0[13]! >> 2).toBe(0); // no exception — BIOS-emulated
   });
 });
 
