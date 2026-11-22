@@ -22,6 +22,7 @@ import { GTE } from "./gte";
 import { Dma } from "./dma";
 import { Cdrom } from "./cdrom";
 import { Spu } from "./spu";
+import { Mdec } from "./mdec";
 
 export class Machine {
   readonly mem = new Memory();
@@ -46,6 +47,8 @@ export class Machine {
   readonly cdrom = new Cdrom();
   /** SPU (1F801C00+ u16 regs, IRQ line 9), SpuUnit delivery. */
   readonly spu = new Spu();
+  /** MDEC (1F801820+), MdecUnit delivery. */
+  readonly mdec = new Mdec();
 
   constructor() {
     this.rcnt.irqFire = (line) => { this.raiseIrq(1 << line); };
@@ -97,6 +100,9 @@ export class Machine {
           const off = (va - 0x1f80_1c00) >> 1;
           return (this.spu.regs[off]! | (this.spu.regs[off + 1]! << 16)) >>> 0;
         }
+        // MDEC 0x1F801820-0x1F80182F (MDEC0 data read / MDEC1 status).
+        if (va === 0x1f80_1820) { const out = this.mdec.readOutput(); return out.length ? out[0]! >>> 0 : 0; }
+        if (va === 0x1f80_1824) return (this.mdec as unknown as { regs: number }).regs >>> 0;
         return undefined;
       }
     }
@@ -139,6 +145,9 @@ export class Machine {
           this.spu.regs[off] = v & 0xffff;
           return true;
         }
+        // MDEC 0x1F801820 (data write) / 0x1F801824 (control).
+        if (va === 0x1f80_1820) { this.mdec.write(v >>> 0); return true; }
+        if (va === 0x1f80_1824) { this.mdec.writeControl(v >>> 0); return true; }
         return false;
       }
     }
