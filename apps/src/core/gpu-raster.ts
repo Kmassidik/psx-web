@@ -8,7 +8,10 @@
  *   Rendering Attributes: X bits 0-10, Y bits 16-26, each -1024..+1023);
  *   pixels outside the drawing area are discarded. Drawing area read from
  *   (gpu as any).clipX1/clipY1/clipX2/clipY2 (inclusive), default
- *   0/0/1023/511, hard-clamped to VRAM bounds.
+ *   0/0/1023/511, hard-clamped to VRAM bounds. Signed draw offsets are added
+ *   after coordinate decoding. HighResolutionRaster scales only geometry and
+ *   the inclusive clip: UVs/CLUT/pages remain native and dither keeps its
+ *   native 4×4 phase.
  * - Rasterization: scanline integer DDA. ALL interpolation runs in 16.16
  *   fixed point on integers (Math.round only on exact integer ratios; the
  *   final ceil/floor for span ends operate on exact integer/2^16 values in
@@ -458,6 +461,7 @@ export class HighResolutionRaster {
   }
 
   rasterize(gpu: { vram: Uint16Array }, prim: Prim): void {
+    if (prim.vertices.length < (prim.kind === "tri" ? 3 : 4)) return;
     rasterizeInternal(gpu, this.vram, this.scale, prim);
     this.enhancedGeometry = true;
   }

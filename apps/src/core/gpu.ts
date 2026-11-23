@@ -422,16 +422,28 @@ export class Gpu {
       return this.composeNativeDisplayFrame();
     }
     if (this.highResolution?.scale !== scale) {
-      this.highResolution = new HighResolutionRaster(this.vram, scale);
+      try {
+        this.highResolution = new HighResolutionRaster(this.vram, scale);
+      } catch {
+        this.highResolution = null;
+        return this.composeNativeDisplayFrame(); // scale=1 exposes unsupported fallback
+      }
     }
     const native = this.composeNativeDisplayFrame();
     const d = this.display, out = this.scaledDisplay, surface = this.highResolution;
     out.x = d.x; out.y = d.y; out.width = d.width * scale; out.height = d.height * scale;
     out.enabled = d.enabled; out.interlaced = d.interlaced; out.pal = d.pal;
     out.colorDepth = d.colorDepth; out.scale = scale;
-    out.enhancedGeometry = d.colorDepth === 15 && surface.enhancedGeometry;
+    out.enhancedGeometry = d.enabled && d.colorDepth === 15 && surface.enhancedGeometry;
     const size = out.width * out.height * 4;
-    if (out.rgba.length !== size) out.rgba = new Uint8Array(size);
+    if (out.rgba.length !== size) {
+      try {
+        out.rgba = new Uint8Array(size);
+      } catch {
+        this.highResolution = null;
+        return native;
+      }
+    }
     if (!d.enabled) {
       out.rgba.fill(0);
       for (let o = 3; o < out.rgba.length; o += 4) out.rgba[o] = 255;
