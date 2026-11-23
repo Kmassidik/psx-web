@@ -78,10 +78,11 @@ describe("DMA block transfers (RAM loopback)", () => {
     d.regs[4 * 3 + 1] = 2;
     d.regs[4 * 3 + 2] = 0x1100_0001; // from RAM (drain), start
     d.dpcr = 0x8_0000; // ch4 enable (nibble 4, bit 19)
+    d.writeDicr((1 << (16 + 4)) | (1 << 23));
     d.request(4);
     d.run(bus);
     expect((d.regs[4 * 3 + 2]! & 0x0100_0000)).toBe(0); // start cleared
-    expect((d.dicr & 0x10)).not.toBe(0); // ch4 status set
+    expect(d.dicr & (1 << (24 + 4))).not.toBe(0); // ch4 interrupt flag
   });
 
   test("ch0 MDECin burst: mdecIn receives seeded RAM words in order", () => {
@@ -156,11 +157,12 @@ describe("DMA ch2 GPU", () => {
     d.regs[2 * 3] = 0x200;
     d.regs[2 * 3 + 2] = 0x0100_0400 | 0x0100_0000; // sync=2 list, start
     d.dpcr = 0x0800; // ch2 enable (nibble 2, bit 11)
+    d.writeDicr((1 << (16 + 2)) | (1 << 23));
     d.request(2);
     d.run(bus);
     expect(bus.writes).toEqual([0xaaaa_0001, 0xaaaa_0002, 0xbbbb_0003]);
     expect((d.regs[2 * 3 + 2]! & 0x0100_0000)).toBe(0);
-    expect((d.dicr & 0x04)).not.toBe(0);
+    expect(d.dicr & (1 << (24 + 2))).not.toBe(0);
   });
 
   test("linked-list with words=0 header advances to next node only", () => {
@@ -201,14 +203,15 @@ describe("DMA ch6 OTC", () => {
     d.regs[6 * 3 + 1] = 4;
     d.regs[6 * 3 + 2] = 0x0100_0000; // start (OTC ignores sync)
     d.dpcr = 0x0800_0000; // ch6 enable (nibble 6, bit 27)
+    d.writeDicr((1 << (16 + 6)) | (1 << 23));
     d.request(6);
     d.run(bus);
-    expect(bus.readRam(0x1010)).toBe(0x100c); // addr-4
+    expect(bus.readRam(0x1010)).toBe(0x100c);
     expect(bus.readRam(0x100c)).toBe(0x1008);
     expect(bus.readRam(0x1008)).toBe(0x1004);
-    expect(bus.readRam(0x1004)).toBe(0x00ff_ffff); // last = terminator
+    expect(bus.readRam(0x1004)).toBe(0x00ff_ffff); // last entry
     expect((d.regs[6 * 3 + 2]! & 0x0100_0000)).toBe(0);
-    expect((d.dicr & 0x40)).not.toBe(0);
+    expect(d.dicr & (1 << (24 + 6))).not.toBe(0);
   });
 
   test("OTC count 0 = 0x10000 entries, wraps down past 0", () => {
@@ -234,10 +237,11 @@ describe("DMA control (DPCR gating, DICR, enable bits)", () => {
     setupBlockRead(d, bus, 0x1000, 1);
     d.request(3);
     d.dpcr = 0x0000; // ch3 disabled
+    d.writeDicr((1 << (16 + 3)) | (1 << 23));
     d.run(bus);
     expect(bus.readRam(0x1000)).toBe(0); // no transfer
     expect((d.regs[3 * 3 + 2]! & 0x0100_0000)).not.toBe(0); // still pending
-    expect(d.dicr & 0x08).toBe(0);
+    expect(d.dicr & (1 << (24 + 3))).toBe(0);
     d.dpcr = 0x8000; // enable ch3
     d.run(bus);
     expect(bus.readRam(0x1000)).toBe(77);
@@ -257,7 +261,7 @@ describe("DMA control (DPCR gating, DICR, enable bits)", () => {
     expect(bus.readRam(0x2000)).toBe(5);
   });
 
-  test("completion sets DICR status and fires raiseIrq(3) with master enable", () => {
+  test("completion sets channel flag and fires raiseIrq(3) with both enables", () => {
     const bus = new TestBus();
     const d = new Dma();
     let irqLine = -1;
@@ -266,16 +270,16 @@ describe("DMA control (DPCR gating, DICR, enable bits)", () => {
     bus.cdromQueue = [1];
     setupBlockRead(d, bus, 0x0, 1);
     d.dpcr = 0x8000;
-    d.writeDicr(0x00ff_ffff); // all enables + master enable + force? no: force cleared (v bit25=0)
+    d.writeDicr(0x0088_0000); // ch3 interrupt mask + master enable
     d.request(3);
     d.run(bus);
-    expect((d.dicr & 0x08)).not.toBe(0); // ch3 status
-    expect((d.dicr & 0x0100_0000)).not.toBe(0); // master flag
+    expect(d.dicr & (1 << (24 + 3))).not.toBe(0);
+    expect(d.dicr & 0x8000_0000).not.toBe(0); // master flag
     expect(irqCount).toBe(1);
     expect(irqLine).toBe(3);
   });
 
-  test("no IRQ when channel enable bit clear in DICR even with status set", () => {
+  test("no flag or IRQ when channel interrupt mask is clear", () => {
     const bus = new TestBus();
     const d = new Dma();
     let fired = 0;
@@ -283,38 +287,37 @@ describe("DMA control (DPCR gating, DICR, enable bits)", () => {
     bus.cdromQueue = [1];
     setupBlockRead(d, bus, 0x0, 1);
     d.dpcr = 0x8000;
-    d.writeDicr(0x0080_0000); // master enable only, ch3 enable clear
+    d.writeDicr(0x0080_0000); // master enable only, ch3 mask clear
     d.request(3);
     d.run(bus);
-    expect((d.dicr & 0x08)).not.toBe(0); // status latched
-    expect((d.dicr & 0x0100_0000)).toBe(0); // master flag suppressed
+    expect(d.dicr & (1 << (24 + 3))).toBe(0);
+    expect(d.dicr & 0x8000_0000).toBe(0);
     expect(fired).toBe(0);
   });
 
-  test("writeDicr ack: write-1-clears status and drops master flag", () => {
+  test("writeDicr ack: write-1-clears channel flag and drops master flag", () => {
     const bus = new TestBus();
     const d = new Dma();
     bus.cdromQueue = [1];
     setupBlockRead(d, bus, 0x0, 1);
     d.dpcr = 0x8000;
-    d.writeDicr(0x0088_0000); // ch3 enable + master
+    d.writeDicr(0x0088_0000); // ch3 mask + master
     d.request(3);
     d.run(bus);
-    expect((d.dicr & 0x0100_0000)).not.toBe(0);
-    d.writeDicr(0x0088_0008); // ack ch3 status, rewrite enables+master as BIOS does
-    expect((d.dicr & 0x08)).toBe(0);
-    expect((d.dicr & 0x0100_0000)).toBe(0); // master flag cleared too
-    expect((d.dicr & 0x0080_0000)).not.toBe(0); // master ENABLE survives
-    expect((d.dicr & 0x0008_0000)).not.toBe(0); // ch3 enable survives
+    expect(d.dicr & 0x8000_0000).not.toBe(0);
+    d.writeDicr(0x0888_0000); // ack ch3 flag, rewrite masks+master as BIOS does
+    expect(d.dicr & (1 << (24 + 3))).toBe(0);
+    expect(d.dicr & 0x8000_0000).toBe(0); // master flag cleared too
+    expect(d.dicr & 0x0080_0000).not.toBe(0); // master ENABLE survives
+    expect(d.dicr & 0x0008_0000).not.toBe(0); // ch3 mask survives
   });
 
-  test("DICR force bit asserts master flag and IRQ without any channel", () => {
-    const bus = new TestBus();
+  test("DICR bus error asserts master flag and IRQ without any channel", () => {
     const d = new Dma();
     let fired = 0;
     d.raiseIrq = () => fired++;
-    d.writeDicr(0x0280_0000); // force + master enable
-    expect((d.dicr & 0x0100_0000)).not.toBe(0);
+    d.writeDicr(0x0000_8000);
+    expect(d.dicr & 0x8000_0000).not.toBe(0);
     expect(fired).toBe(1);
   });
 
@@ -338,12 +341,13 @@ describe("DMA control (DPCR gating, DICR, enable bits)", () => {
     d.regs[6 * 3 + 1] = 2;
     d.regs[6 * 3 + 2] = 0x0100_0000; // ch6 OTC
     d.dpcr = 0x0800_0080; // ch1 + ch6
+    d.writeDicr((1 << (16 + 1)) | (1 << (16 + 6)) | (1 << 23));
     d.request(1);
     d.request(6);
     d.run(bus);
     expect(bus.readRam(0x1000)).toBe(0x5a5a);
     expect(bus.readRam(0x1010)).toBe(0x100c);
     expect(bus.readRam(0x100c)).toBe(0x00ff_ffff);
-    expect(d.dicr & 0x42).toBe(0x42); // ch1 + ch6 status
+    expect(d.dicr & ((1 << (24 + 1)) | (1 << (24 + 6)))).toBe((1 << (24 + 1)) | (1 << (24 + 6)));
   });
 });

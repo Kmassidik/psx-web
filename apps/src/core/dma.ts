@@ -31,12 +31,13 @@ const BCR_ZERO_COUNT = 0x1_0000;
 const RAM_ADDR_MASK = 0x1f_fffc;
 /** Linked-list / OTC next-pointer terminator. */
 const LIST_END = 0x00ff_ffff;
-/** DICR field masks. */
-const DICR_STAT = 0x0000_007f; // per-channel status, write-1-clear
-const DICR_ENABLE = 0x007f_0000; // per-channel enable, bits 16+ch
+/** DICR fields: slice-interrupt controls, masks, W1C flags, and derived master flag. */
+const DICR_SLICE_IRQ = 0x0000_007f;
+const DICR_BUS_ERROR = 0x0000_8000;
+const DICR_ENABLE = 0x007f_0000;
 const DICR_MASTER_ENABLE = 0x0080_0000;
-const DICR_MASTER_FLAG = 0x0100_0000;
-const DICR_FORCE = 0x0200_0000;
+const DICR_FLAGS = 0x7f00_0000;
+const DICR_MASTER_FLAG = 0x8000_0000;
 /** DMA interrupt line into the IRQ controller. */
 const IRQ_LINE = 3;
 
@@ -58,7 +59,7 @@ export class Dma {
   readonly regs = new Uint32Array(21);
   /** 0x1F8010F0: one nibble per channel, bit3 of nibble = enable. */
   dpcr = 0;
-  /** 0x1F8010F4: status bits 0-6, enables 16-22, master enable/flag, force. */
+  /** 0x1F8010F4: controls/masks, channel flags 24-30, derived master flag 31. */
   dicr = 0;
   /** Called on IRQ assert (line 3) when a completed channel is enabled. */
   raiseIrq: (line: number) => void = () => {};
@@ -85,30 +86,30 @@ export class Dma {
       else if (((ctrl >>> CHCR_SYNC_SHIFT) & 3) === CHCR_SYNC_LIST) this.runLinkedList(ch, bus);
       else this.runBlock(ch, bus);
       this.regs[ch * 3 + 2] = ctrl & ~CHCR_START;
-      this.dicr |= 1 << ch;
+      if ((this.dicr & DICR_MASTER_ENABLE) !== 0 && (this.dicr & (1 << (16 + ch))) !== 0) {
+        this.dicr |= 1 << (24 + ch);
+      }
       this.onComplete(ch);
       this.updateIrq();
     }
   }
 
-  /** MMIO write for 0x1F8010F4: write-1-clear status, set enables/master/force. */
+  /** MMIO write: update controls/masks and acknowledge channel flags with 1s. */
   writeDicr(v: number): void {
-    this.dicr &= ~(v & DICR_STAT);
-    this.dicr = (this.dicr & ~DICR_ENABLE) | (v & DICR_ENABLE);
-    this.dicr |= v & DICR_MASTER_ENABLE; // master enable: write-1-set, sticky
-    this.dicr = (this.dicr & ~DICR_FORCE) | (v & DICR_FORCE);
+    this.dicr &= ~(v & DICR_FLAGS);
+    const writable = DICR_SLICE_IRQ | DICR_BUS_ERROR | DICR_ENABLE | DICR_MASTER_ENABLE;
+    this.dicr = (this.dicr & ~writable) | (v & writable);
     this.updateIrq();
   }
 
-  /** Master flag = (status & per-channel enables) | force; IRQ needs master enable. */
+  /** Bit 31 derives from bus error or master-enabled channel flags; IRQ is edge-triggered. */
   private updateIrq(): void {
-    const pending = (this.dicr & DICR_STAT) & ((this.dicr >>> 16) & DICR_STAT);
-    if (pending !== 0 || (this.dicr & DICR_FORCE) !== 0) {
-      this.dicr |= DICR_MASTER_FLAG;
-      if ((this.dicr & DICR_MASTER_ENABLE) !== 0) this.raiseIrq(IRQ_LINE);
-    } else {
-      this.dicr &= ~DICR_MASTER_FLAG;
-    }
+    const wasPending = (this.dicr & DICR_MASTER_FLAG) !== 0;
+    const pending = (this.dicr & DICR_BUS_ERROR) !== 0 ||
+      ((this.dicr & DICR_MASTER_ENABLE) !== 0 && (this.dicr & DICR_FLAGS) !== 0);
+    if (pending) this.dicr = (this.dicr | DICR_MASTER_FLAG) >>> 0;
+    else this.dicr &= ~DICR_MASTER_FLAG;
+    if (!wasPending && pending) this.raiseIrq(IRQ_LINE);
   }
 
   /** Burst (sync 0) and block (sync 1): BCR words (× BCR blocks for sync 1). */
