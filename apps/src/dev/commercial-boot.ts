@@ -76,15 +76,14 @@ if (args.includes("--clear-custom-exit")) {
   const kernel = machine["kernel"] as unknown as { customExitAddress: number };
   const runHandler = machine["runHandler"].bind(machine);
   machine["runHandler"] = (entry, kind) => {
-    runHandler(entry, kind);
+    const result = runHandler(entry, kind);
     if (kind === "exception") (machine["kernel"] as unknown as { customExit: number }).customExit = 0;
+    return result;
   };
 }
 if (args.includes("--no-exception-hook")) {
   const runHandler = machine["runHandler"].bind(machine);
-  machine["runHandler"] = (entry, kind) => {
-    if (kind !== "exception") runHandler(entry, kind);
-  };
+  machine["runHandler"] = (entry, kind) => kind !== "exception" ? runHandler(entry, kind) : 0;
 }
 machine.setSectorProvider(provider);
 const hex = (value: number, width = 8) => (value >>> 0).toString(16).padStart(width, "0");
@@ -126,7 +125,7 @@ if (args.includes("--handler-trace")) {
     console.log(`handler enter ${hex(entry)} cycles=${machine.cpu.cycles}`);
     const before = machine.diagnostics.handlerTruncations;
     active++;
-    runHandler(entry, kind);
+    const result = runHandler(entry, kind);
     active--;
     console.log(`handler exit ${hex(entry)} cycles=${machine.cpu.cycles} truncations=${machine.diagnostics.handlerTruncations}`);
     if (machine.diagnostics.handlerTruncations !== before) {
@@ -141,6 +140,7 @@ if (args.includes("--handler-trace")) {
       counts.clear();
       hleCounts.clear();
     }
+    return result;
   };
 }
 

@@ -24,7 +24,7 @@ export class Rcnt {
       const mode = this.regs[t * 3 + 1]!;
       const target = this.regs[t * 3 + 2]!;
       const sync = mode & 7;
-      if (t === 2 && (sync === 0 || sync === 3)) continue; // synchronized counter 2 is stopped
+      if (t === 2 && sync === 3) continue; // counter 2 sync mode 3 is stopped
       const source = (mode >>> 8) & 3;
       const step = t === 2 && source >= 2 ? 8 : 1;
       const resetOnTarget = (mode & 0x08) !== 0;

@@ -56,6 +56,16 @@ describe("Root counters (rcnt_update contract)", () => {
     expect(r.regs[3]).toBe(20_010);
   });
 
+  test("timer 2 free-runs in sync mode 0 and stops only in mode 3", () => {
+    const r = new Rcnt();
+    r.regs[7] = 0x0258;
+    r.tick(32);
+    expect(r.regs[6]).toBe(4);
+    r.regs[7] = 0x025b;
+    r.tick(4);
+    expect(r.regs[6]).toBe(4);
+  });
+
   test("counter wraps instead of stopping when reset-on-target is clear", () => {
     const r = new Rcnt();
     r.regs[0] = 0xfffc;

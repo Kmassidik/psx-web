@@ -168,6 +168,38 @@ describe("Reserved instruction handling", () => {
   });
 });
 
+describe("Registered interrupt chains", () => {
+  test("dispatches verifier and handler entries across registered priorities", () => {
+    const m = new Machine();
+    m.installHleVectors();
+    m.mem.store32(0x10000, 0x2402_0001);
+    m.mem.store32(0x10004, 0x2401_0001);
+    m.mem.store32(0x10008, 0xac01_3000);
+    m.mem.store32(0x1000c, 0x03e0_0008);
+    m.mem.store32(0x10010, 0);
+    m.mem.store32(0x10020, 0x2402_0001);
+    m.mem.store32(0x10024, 0x2401_0001);
+    m.mem.store32(0x10028, 0xac01_3004);
+    m.mem.store32(0x1002c, 0x03e0_0008);
+    m.mem.store32(0x10030, 0);
+    m.mem.store32(0x10044, 0x8001_0000);
+    m.mem.store32(0x10048, 0x8001_0020);
+    m.cpu.reset(0xc0);
+    m.cpu.r[9] = 2;
+    m.cpu.r[4] = 2;
+    m.cpu.r[5] = 0x10040;
+    m.cpu.r[31] = 0x200;
+    m.cpu.step();
+    expect(m.kernel.interruptChain(2)).toEqual([{ verifier: 0x8001_0000, handler: 0x8001_0020 }]);
+    m.irqStatus = 1;
+    m.irqMask = 1;
+    m.cpu.cp0[12] = 0x401;
+    m.runSlice(1);
+    expect(m.mem.load32(0x3000)).toBe(1);
+    expect(m.mem.load32(0x3004)).toBe(1);
+  });
+});
+
 describe("Hardware interrupt delivery", () => {
   test("I_STAT acknowledges selected IRQs by clearing zero bits", () => {
     const m = new Machine();
@@ -218,12 +250,12 @@ describe("Hardware interrupt delivery", () => {
     m.mem.store32(0x10004, 0);
     m.mem.store32(0, 0xac28_0000); // SW t0, 0(at): must not execute
     m.cpu.reset(0x8003_0000);
-    m.cpu.r[1] = 0x400;
+    m.cpu.r[1] = 0x600;
     m.cpu.r[8] = 1;
     m.cpu.r[31] = 0x8001_2345;
     const registers = m.cpu.r.slice();
     m["runHandler"](0x8001_0000);
-    expect(m.mem.load32(0x400)).toBe(0);
+    expect(m.mem.load32(0x600)).toBe(0);
     expect(m.cpu.pc >>> 0).toBe(0x8003_0000);
     expect(m.cpu.r).toEqual(registers);
   });

@@ -84,6 +84,25 @@ export class BiosKernel {
     return this.interruptHandlers.find((handler) => handler.priority === priority)?.first ?? 0;
   }
 
+  interruptEntries(): readonly InterruptHandler[] {
+    return this.interruptHandlers;
+  }
+
+  /** Diagnostic view of one ExCB priority chain; both function pointers are
+   * guest-owned and must be read at dispatch time. */
+  interruptChain(priority: number): Array<{ verifier: number; handler: number }> {
+    const chain: Array<{ verifier: number; handler: number }> = [];
+    for (const handler of this.interruptHandlers) {
+      if (handler.priority === priority) {
+        chain.push({
+          verifier: this.cpu.mem.load32(handler.struc + 4),
+          handler: this.cpu.mem.load32(handler.struc + 8),
+        });
+      }
+    }
+    return chain;
+  }
+
   exceptionHook(): number {
     return this.customExit === 0 ? 0 : this.cpu.mem.load32(this.customExit);
   }

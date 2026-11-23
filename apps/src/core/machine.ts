@@ -231,6 +231,28 @@ export class Machine {
     this.runHandler(this.kernel.interruptHandler(1), "vblank");
   }
 
+  /** Execute ExCB chains in priority order. Each FIRST function may request its
+   * SECOND function by returning nonzero; ReturnFromException skips all lower
+   * priority handlers and the custom exception hook. */
+  private runInterruptChain(): boolean {
+    const entries = this.kernel.interruptEntries();
+    for (let priority = 0; priority < 4; priority++) {
+      for (const entry of entries) {
+        if (entry.priority !== priority) continue;
+        const first = this.mem.load32(entry.struc + 8);
+        if (first === 0) continue;
+        const result = this.runHandler(first);
+        if (this.handlerReturnedFromException) return false;
+        const second = this.mem.load32(entry.struc + 4);
+        if (result !== 0 && second !== 0) {
+          this.runHandler(second);
+          if (this.handlerReturnedFromException) return false;
+        }
+      }
+    }
+    return true;
+  }
+
   private runEventCallbacks(): void {
     for (const callback of this.kernel.takeEventCallbacks()) this.runHandler(callback);
   }
@@ -238,9 +260,11 @@ export class Machine {
   readonly diagnostics = { handlerTruncations: 0, lastHandlerEntry: 0, lastHandlerPc: 0, lastHandlerKind: "", lastHandlerRegisters: [] as number[] };
 
   private handlerDepth = 0;
+  private handlerReturnedFromException = false;
 
-  private runHandler(entry: number, kind = "event"): void {
-    if (entry === 0) return;
+  private runHandler(entry: number, kind = "event"): number {
+    if (entry === 0) return 0;
+    this.handlerReturnedFromException = false;
     this.kernel.prepareExceptionReturn();
     const registers = this.cpu.r.slice();
     const cp0 = this.cpu.cp0.slice();
@@ -285,7 +309,10 @@ export class Machine {
       const isHleRam = handlerPc >= 0x8000_0100 && handlerPc < 0x8000_3000;
       if (handlerPc < 0x8000_0000 && !isVector && !isHleRam) break;
       if (!this.cpu.step()) break;
-      if (this.kernel.consumeExceptionReturn()) break;
+      if (this.kernel.consumeExceptionReturn()) {
+        this.handlerReturnedFromException = true;
+        break;
+      }
       this.rcnt.tick(1);
       this.vblankAcc++;
       if (this.vblankAcc >= 563_000) {
@@ -310,6 +337,7 @@ export class Machine {
       this.diagnostics.lastHandlerPc = this.cpu.pc >>> 0;
       this.diagnostics.lastHandlerRegisters = [...this.cpu.r];
     }
+    const result = this.cpu.r[2]!;
     this.handlerDepth--;
     this.cpu.r.set(registers);
     this.cpu.cp0.set(cp0);
@@ -319,6 +347,7 @@ export class Machine {
     this.cpu.lo = lo;
     this.cpu.inBranchDelay = inBranchDelay;
     this.cpu.loadDelay = loadDelay;
+    return result;
   }
 
   private vblankAcc = 0;
@@ -333,7 +362,8 @@ export class Machine {
 
   /** Run up to n CPU instructions with DMA/CDROM/SPU/rcnt service per slice. */
   runSlice(n: number): boolean {
-    const deliverException = (this.irqStatus & this.irqMask) !== 0 && (this.cpu.cp0[12]! & 0x401) === 0x401;
+    const pendingIrq = this.irqStatus & this.irqMask;
+    const deliverException = pendingIrq !== 0 && (this.cpu.cp0[12]! & 0x401) === 0x401;
     if (deliverException) {
       this.cpu.exception(0, 0x400);
       this.mem.store32(0x84, 0x4200_0010);
@@ -341,7 +371,8 @@ export class Machine {
     }
     const ok = this.cpu.run(n);
     if (deliverException) {
-      this.runHandler(this.kernel.interruptHandler(0), "vblank");
+      if ((pendingIrq & IRQ_VBLANK) !== 0) this.runInterruptChain();
+      else this.runHandler(this.kernel.interruptHandler(0), "vblank");
       this.runHandler(this.kernel.exceptionHook(), "exception");
     }
     this.runDma();
@@ -372,7 +403,6 @@ export class Machine {
       this.raiseIrq(IRQ_VBLANK);
       this.kernel.deliver(0xf200_0003, 0x02);
       this.kernel.deliver(0xf000_0001, 0x1000);
-      this.runVblankHandler();
     }
     // rcnt ticks on the same clock; slice granularity is fine for Phase 1
     return ok;
