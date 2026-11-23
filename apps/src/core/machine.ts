@@ -66,6 +66,12 @@ export class Machine {
     this.dma.raiseIrq = () => {
       this.raiseIrq(IRQ_DMA);
     };
+    // The DICR master flag is the real level of the DMA IRQ line: when the
+    // guest acknowledges the channel flags the line drops, so I_STAT must
+    // follow or bit 3 stays latched and the BIOS dispatch gate misfires.
+    this.dma.deassertIrq = () => {
+      this.irqStatus &= ~IRQ_DMA;
+    };
     this.cdrom.irqFire = (_line, kind) => {
       this.raiseIrq(IRQ_CDROM);
       // INT3 is only an acknowledgement, not transfer completion. INT1 is
@@ -122,6 +128,19 @@ export class Machine {
 
   raiseIrq(bits: number): void {
     this.irqStatus |= bits;
+  }
+
+  /**
+   * Device-level IRQ request: an enabled pending I_STAT line, or a device
+   * still holding its line level (latched CDROM response INT, DICR master
+   * flag). Dispatch on this state instead of raw I_STAT so that an
+   * acknowledged CDROM INT cannot block the chain until I_STAT writeback,
+   * while controllers raised by legacy paths still dispatch exactly once.
+   */
+  private irqRequested(): boolean {
+    const pending = this.irqStatus & this.irqMask;
+    if (pending !== 0) return true;
+    return (this.cdrom.regs[5]! & 0x07) !== 0 || this.dma.irqPending;
   }
 
   private portRead(va: number): number | undefined {
@@ -365,8 +384,7 @@ export class Machine {
 
   /** Run up to n CPU instructions with DMA/CDROM/SPU/rcnt service per slice. */
   runSlice(n: number): boolean {
-    const pendingIrq = this.irqStatus & this.irqMask;
-    const deliverException = pendingIrq !== 0 && (this.cpu.cp0[12]! & 0x401) === 0x401;
+    const deliverException = this.irqRequested() && (this.cpu.cp0[12]! & 0x401) === 0x401;
     if (deliverException) {
       this.cpu.exception(0, 0x400);
       this.mem.store32(0x84, 0x4200_0010);
@@ -375,8 +393,7 @@ export class Machine {
     const ok = this.cpu.run(n);
     this.joypad.tick(n);
     if (deliverException) {
-      if ((pendingIrq & IRQ_VBLANK) !== 0 && (pendingIrq & (IRQ_CDROM | IRQ_DMA)) === 0) this.runInterruptChain();
-      else this.runHandler(this.kernel.interruptHandler(0), "vblank");
+      this.runInterruptChain();
       this.runHandler(this.kernel.exceptionHook(), "exception");
     }
     this.runDma();

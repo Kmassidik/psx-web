@@ -63,6 +63,8 @@ export class Dma {
   dicr = 0;
   /** Called on IRQ assert (line 3) when a completed channel is enabled. */
   raiseIrq: (line: number) => void = () => {};
+  /** Called when the level-derived master flag drops (line 3 deassert). */
+  deassertIrq: (line: number) => void = () => {};
   /** Called once for every completed DMA channel, including repeated transfers. */
   onComplete: (channel: number) => void = () => {};
   /** Device request gate; channels without a device request stay pending. */
@@ -104,7 +106,14 @@ export class Dma {
     this.updateIrq();
   }
 
-  /** Bit 31 derives from bus error or master-enabled channel flags; IRQ is edge-triggered. */
+  /** True while the DICR master flag is latched (requests or a legacy raise
+   * hold the line until I_STAT/DICR acknowledgement). */
+  get irqPending(): boolean {
+    return (this.dicr & DICR_MASTER_FLAG) !== 0;
+  }
+
+  /** Bit 31 derives from bus error or master-enabled channel flags; the IRQ
+   * line is edge-asserted on 0->1 and deasserted when the flag level drops. */
   private updateIrq(): void {
     const wasPending = (this.dicr & DICR_MASTER_FLAG) !== 0;
     const pending = (this.dicr & DICR_BUS_ERROR) !== 0 ||
@@ -112,6 +121,7 @@ export class Dma {
     if (pending) this.dicr = (this.dicr | DICR_MASTER_FLAG) >>> 0;
     else this.dicr &= ~DICR_MASTER_FLAG;
     if (!wasPending && pending) this.raiseIrq(IRQ_LINE);
+    else if (wasPending && !pending) this.deassertIrq(IRQ_LINE);
   }
 
   /** Burst (sync 0) and block (sync 1): BCR words (× BCR blocks for sync 1). */
