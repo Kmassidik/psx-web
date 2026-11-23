@@ -21,6 +21,7 @@ interface Checkpoint {
   dma: string;
   gpu: string;
   nonBlack: number;
+  handlerTruncations: number;
 }
 
 interface CdromDebug {
@@ -124,6 +125,7 @@ function checkpoint(slice: number, includePixels = true): Checkpoint {
     dma: `${hex(machine.dma.dpcr)}/${hex(machine.dma.dicr)}`,
     gpu: `${hex(machine.gpu.gpur1)}/${hex(machine.gpu.gpur2)}`,
     nonBlack: includePixels ? nonBlackPixels() : 0,
+    handlerTruncations: machine.diagnostics.handlerTruncations,
   };
 }
 

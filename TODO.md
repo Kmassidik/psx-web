@@ -349,7 +349,7 @@ Detailed execution plan for turning the current emulator checkpoint into a relia
 
 ## Phase 7 — Performance and resource safety
 
-### [ ] 7.1 Move emulation to a worker with bounded transfer paths
+### [x] 7.1 Move emulation to a worker with bounded transfer paths
 
 **Goal:** Keep UI/input responsive during heavy emulation.
 

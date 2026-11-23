@@ -1,74 +1,66 @@
-import { useEffect, useRef, useState } from "react";
-import type { Machine } from "../../core/machine";
-import { createFormattedMemoryCard, MEMORY_CARD_SIZE } from "../../core/memory-card";
-import { loadStoredMemoryCard, storeMemoryCard } from "../memory-card-storage";
+import { useRef, useState } from "react";
+import { MEMORY_CARD_SIZE } from "../../core/memory-card";
+import { storeMemoryCard } from "../memory-card-storage";
+import type { WorkerHost } from "../worker-host";
 import { useApp, setConfig } from "../store";
 import { Dialog, buttonClass, entryClass, frameClass, frameTitleClass } from "./Dialog";
 
 export interface MemcardDialogProps {
-  machine: Machine | null;
+  host: WorkerHost | null;
   onClose: () => void;
 }
 
-export function MemcardDialog({ machine, onClose }: MemcardDialogProps) {
+export function MemcardDialog({ host, onClose }: MemcardDialogProps) {
   const live = useApp((s) => s.config);
   const [file1, setFile1] = useState(live.Memcard1);
   const [file2, setFile2] = useState(live.Memcard2);
   const [status, setStatus] = useState("Cards load from browser-local storage when available.");
   const inputs = [useRef<HTMLInputElement>(null), useRef<HTMLInputElement>(null)];
 
-  useEffect(() => {
-    if (!machine) return;
-    for (const [slot, name] of [[0, file1], [1, file2]] as const) {
-      void loadStoredMemoryCard(name).then((bytes) => {
-        if (bytes) machine.joypad.importMemoryCard(slot, bytes);
-        else machine.joypad.attachMemoryCard(slot);
-      }).catch((error) => setStatus(`Slot ${slot + 1}: ${String(error)}`));
-    }
-  }, [machine]); // Initial names are preferences; editing them does not replace attached cards.
-
   const fileName = (slot: 0 | 1) => (slot === 0 ? file1 : file2).trim() || `slot${slot + 1}.mcr`;
-  const persist = async (slot: 0 | 1) => {
-    if (!machine) return;
-    const bytes = machine.joypad.exportMemoryCard(slot);
-    if (!bytes) throw new Error(`Slot ${slot + 1} has no attached card`);
-    await storeMemoryCard(fileName(slot), bytes);
-  };
 
-  const format = (slot: 0 | 1) => {
-    if (!machine) return;
+  const format = async (slot: 0 | 1) => {
+    if (!host) return;
     try {
-      machine.joypad.importMemoryCard(slot, createFormattedMemoryCard());
-      void persist(slot).then(() => setStatus(`Slot ${slot + 1} formatted and saved locally.`)).catch((error) => setStatus(String(error)));
+      const formatted = await host.memoryCard(slot, "format");
+      const bytes = formatted ?? await host.memoryCard(slot, "attach");
+      if (!bytes) throw new Error(`Slot ${slot + 1} could not be formatted`);
+      await storeMemoryCard(fileName(slot), new Uint8Array(bytes));
+      setStatus(`Slot ${slot + 1} formatted and saved locally.`);
     } catch (error) {
       setStatus(String(error));
     }
   };
 
   const openFile = async (slot: 0 | 1, file: File | undefined) => {
-    if (!machine || !file) return;
+    if (!host || !file) return;
     try {
-      const bytes = new Uint8Array(await file.arrayBuffer());
-      if (bytes.byteLength !== MEMORY_CARD_SIZE) throw new Error(`Memory-card image must be exactly ${MEMORY_CARD_SIZE} bytes`);
-      machine.joypad.importMemoryCard(slot, bytes);
-      await storeMemoryCard(fileName(slot), bytes);
+      const buffer = await file.arrayBuffer();
+      if (buffer.byteLength !== MEMORY_CARD_SIZE) throw new Error(`Memory-card image must be exactly ${MEMORY_CARD_SIZE} bytes`);
+      const bytes = await host.memoryCard(slot, "import", buffer);
+      if (!bytes) throw new Error(`Slot ${slot + 1} has no attached card`);
+      await storeMemoryCard(fileName(slot), new Uint8Array(bytes));
       setStatus(`Loaded ${file.name} into slot ${slot + 1}.`);
     } catch (error) {
       setStatus(`Open failed: ${String(error)}`);
     }
   };
 
-  const exportCard = (slot: 0 | 1) => {
-    if (!machine) return;
-    const bytes = machine.joypad.exportMemoryCard(slot);
-    if (!bytes) { setStatus(`Slot ${slot + 1} has no attached card.`); return; }
-    const url = URL.createObjectURL(new Blob([bytes.buffer as ArrayBuffer], { type: "application/octet-stream" }));
-    const anchor = document.createElement("a");
-    anchor.href = url;
-    anchor.download = fileName(slot);
-    anchor.click();
-    URL.revokeObjectURL(url);
-    setStatus(`Exported slot ${slot + 1}.`);
+  const exportCard = async (slot: 0 | 1) => {
+    if (!host) return;
+    try {
+      const bytes = await host.memoryCard(slot, "export");
+      if (!bytes) { setStatus(`Slot ${slot + 1} has no attached card.`); return; }
+      const url = URL.createObjectURL(new Blob([bytes], { type: "application/octet-stream" }));
+      const anchor = document.createElement("a");
+      anchor.href = url;
+      anchor.download = fileName(slot);
+      anchor.click();
+      URL.revokeObjectURL(url);
+      setStatus(`Exported slot ${slot + 1}.`);
+    } catch (error) {
+      setStatus(`Export failed: ${String(error)}`);
+    }
   };
 
   return (
@@ -97,10 +89,15 @@ export function MemcardDialog({ machine, onClose }: MemcardDialogProps) {
                   event.currentTarget.value = "";
                 }}
               />
-              <button type="button" className={buttonClass} disabled={!machine} title={machine ? "Import a 128 KiB card image" : "Load a game first"} onClick={() => inputs[slot]?.current?.click()}>Open</button>
-              <button type="button" className={buttonClass} disabled={!machine} onClick={() => format(slot)}>Format</button>
-              <button type="button" className={buttonClass} disabled={!machine} onClick={() => { machine?.joypad.detachMemoryCard(slot); setStatus(`Slot ${slot + 1} ejected; stored data was kept.`); }}>Eject</button>
-              <button type="button" className={buttonClass} disabled={!machine} onClick={() => exportCard(slot)}>Export</button>
+              <button type="button" className={buttonClass} disabled={!host} title={host ? "Import a 128 KiB card image" : "Load a game first"} onClick={() => inputs[slot]?.current?.click()}>Open</button>
+              <button type="button" className={buttonClass} disabled={!host} onClick={() => void format(slot)}>Format</button>
+              <button type="button" className={buttonClass} disabled={!host} onClick={() => {
+                if (!host) return;
+                void host.memoryCard(slot, "detach").then(() => {
+                  setStatus(`Slot ${slot + 1} ejected; stored data was kept.`);
+                }).catch((error) => setStatus(`Eject failed: ${String(error)}`));
+              }}>Eject</button>
+              <button type="button" className={buttonClass} disabled={!host} onClick={() => void exportCard(slot)}>Export</button>
             </div>
           ))}
         </div>

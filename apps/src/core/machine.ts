@@ -226,6 +226,8 @@ export class Machine {
     for (const callback of this.kernel.takeEventCallbacks()) this.runHandler(callback);
   }
 
+  readonly diagnostics = { handlerTruncations: 0 };
+
   private runHandler(entry: number): void {
     if (entry === 0) return;
     const registers = this.cpu.r.slice();
@@ -242,7 +244,8 @@ export class Machine {
     this.cpu.r[31] = 0x8000_0110;
     // Keep handlers interpreted: their per-instruction RCNT ticking and GTE /
     // HLE / CP0 behavior must not be coarsened to block-granular timing.
-    for (let i = 0; i < 1_000_000 && this.cpu.pc !== 0x8000_0110; i++) {
+    let steps = 0;
+    for (; steps < 1_000_000 && this.cpu.pc !== 0x8000_0110; steps++) {
       const handlerPc = this.cpu.pc >>> 0;
       const vector = handlerPc & 0x1fff_ffff;
       const isVector = vector === 0xa0 || vector === 0xb0 || vector === 0xc0;
@@ -251,6 +254,7 @@ export class Machine {
       if (!this.cpu.step()) break;
       this.rcnt.tick(1);
     }
+    if (steps === 1_000_000 && this.cpu.pc !== 0x8000_0110) this.diagnostics.handlerTruncations++;
     this.cpu.r.set(registers);
     this.cpu.cp0.set(cp0);
     this.cpu.pc = pc;

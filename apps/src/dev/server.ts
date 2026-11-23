@@ -6,7 +6,7 @@
 import { serve } from "bun";
 
 const result = await Bun.build({
-  entrypoints: ["./src/main.tsx"],
+  entrypoints: ["./src/main.tsx", "./src/core/emulator-worker.ts"],
   target: "browser",
   sourcemap: "inline",
 });
@@ -23,6 +23,9 @@ serve({
     }
     if (url.pathname === "/main.js") {
       return new Response(result.outputs[0], { headers: { "content-type": "application/javascript" } });
+    }
+    if (url.pathname === "/core/emulator-worker.js") {
+      return new Response(result.outputs[1], { headers: { "content-type": "application/javascript" } });
     }
     return new Response("not found", { status: 404 });
   },

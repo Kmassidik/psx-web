@@ -86,7 +86,7 @@ export class WorkerHost {
   }
 
   static create(callbacks: WorkerHostCallbacks = {}, requestTimeoutMs?: number): WorkerHost {
-    const worker = new Worker(new URL("../core/emulator-worker.ts", import.meta.url), {
+    const worker = new Worker(new URL("/core/emulator-worker.js", window.location.origin), {
       type: "module", name: "psx-emulator",
     });
     // The browser's overloaded Worker signatures are adapted at this one DOM boundary.

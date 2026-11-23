@@ -1,15 +1,12 @@
-/** Native-resolution, client-side PS1 window and emulator lifecycle. */
+/** Worker-backed PS1 window; React owns controls, never emulator memory or frames. */
 import { useCallback, useEffect, useRef, useState } from "react";
-import { parsePsExe } from "../core/loader/psexe";
-import { createMdfSectorProvider } from "../core/loader/mdf";
-import { readIsoFile } from "../core/loader/iso9660";
-import { Machine } from "../core/machine";
 import { SpuAudioSink } from "../core/spu-audio";
 import { bindAudioUnlock } from "./audio";
 import { loadStoredSaveState, storeSaveState } from "./save-state-storage";
-import { GamepadInput } from "./gamepad-input";
-import { attachStoredMemoryCards } from "./memory-card-storage";
-import { CycleBudget } from "./cycle-budget";
+import { WorkerGamepadInput } from "./worker-gamepad-input";
+import { WorkerFramePresenter } from "./worker-presentation";
+import { loadStoredMemoryCard } from "./memory-card-storage";
+import { WorkerHost, type WorkerHostError } from "./worker-host";
 import { PAD_BUTTONS, type PsxConfig } from "../state/config";
 import { getState, setConfig, setState, useApp } from "./store";
 import { DisplaySurface } from "./DisplaySurface";
@@ -19,10 +16,21 @@ import { GamepadConfigDialog } from "./dialogs/GamepadConfigDialog";
 import { MemcardDialog } from "./dialogs/MemcardDialog";
 import { Dialog } from "./dialogs/Dialog";
 
-interface BootSource {
-  buffer: ArrayBuffer;
-  name: string;
-  mode: FileMode;
+function rendererScale(renderer: PsxConfig["Renderer"]): 1 | 2 | 4 {
+  return renderer === "2x" ? 2 : renderer === "4x" ? 4 : 1;
+}
+
+function exactBuffer(bytes: Uint8Array): ArrayBuffer {
+  return bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer;
+}
+
+async function storedMemoryCard(name: string): Promise<ArrayBuffer | undefined> {
+  try {
+    const bytes = await loadStoredMemoryCard(name);
+    return bytes ? exactBuffer(bytes) : undefined;
+  } catch {
+    return undefined; // A formatted worker-owned card remains usable without IndexedDB.
+  }
 }
 
 export function MainWindow() {
@@ -40,74 +48,79 @@ export function MainWindow() {
   const fileInput = useRef<HTMLInputElement>(null);
   const fileMode = useRef<FileMode>("auto");
   const stateSlotRef = useRef(1);
-  const machineRef = useRef<Machine | null>(null);
-  const gamepadInputRef = useRef<GamepadInput | null>(null);
-  if (!gamepadInputRef.current) gamepadInputRef.current = new GamepadInput();
+  const gamepadInputRef = useRef<WorkerGamepadInput | null>(null);
+  if (!gamepadInputRef.current) gamepadInputRef.current = new WorkerGamepadInput();
   const gamepadInput = gamepadInputRef.current;
-  const bootSourceRef = useRef<BootSource | null>(null);
+  const presenterRef = useRef<WorkerFramePresenter | null>(null);
+  if (!presenterRef.current) presenterRef.current = new WorkerFramePresenter();
+  const presenter = presenterRef.current;
   const configRef = useRef<PsxConfig>(config);
   const rafRef = useRef(0);
+  const loopGenerationRef = useRef(0);
+  const operationRef = useRef(0);
   const audioRef = useRef<SpuAudioSink | null>(null);
   if (!audioRef.current) audioRef.current = new SpuAudioSink({ volume: config.AudioVolume });
   const audio = audioRef.current;
   const [muted, setMuted] = useState(false);
   const redrawRef = useRef<() => void>(() => {});
+  const workerErrorRef = useRef<(error: WorkerHostError) => void>(() => {});
+  const hostRef = useRef<WorkerHost | null>(null);
   configRef.current = config;
 
-  const releasePads = useCallback(() => {
-    gamepadInput.release(machineRef.current);
-  }, [gamepadInput]);
-
   const cancelLoop = useCallback(() => {
+    loopGenerationRef.current++;
     cancelAnimationFrame(rafRef.current);
     rafRef.current = 0;
   }, []);
+
+  if (!hostRef.current) {
+    hostRef.current = WorkerHost.create({
+      onFrame: (frame) => presenter.present(frame, configRef.current.BilinearFilter),
+      onAudio: (chunk) => { audio.push(chunk.left, chunk.right); },
+      onRumble: (rumble) => gamepadInput.applyRumble(rumble),
+      onError: (error) => workerErrorRef.current(error),
+    });
+  }
+  const host = hostRef.current;
+
+  const releasePads = useCallback(() => {
+    gamepadInput.release(host);
+  }, [gamepadInput, host]);
 
   const redraw = useCallback(() => redrawRef.current(), []);
 
   const startLoop = useCallback((name: string) => {
     cancelLoop();
-    const machine = machineRef.current;
-    const canvas = canvasRef.current;
-    if (!machine || !canvas) return;
-    const nativeCanvas = document.createElement("canvas");
-    const nativeContext = nativeCanvas.getContext("2d");
-    const context = canvas.getContext("2d");
-    let image: ImageData | null = null;
+    if (!canvasRef.current || host.isDisposed) return;
+    const generation = loopGenerationRef.current;
     let frames = 0;
     let lastFps = performance.now();
     let lastCycleTime = lastFps;
-    const cycleBudget = new CycleBudget();
+    redrawRef.current = () => presenter.redraw(configRef.current.BilinearFilter);
 
-    const present = () => {
-      if (machineRef.current !== machine || !nativeContext || !context) return;
-      const renderer = configRef.current.Renderer;
-      const scale = renderer === "2x" ? 2 : renderer === "4x" ? 4 : 1;
-      const frame = machine.gpu.composeDisplayFrame(scale);
-      if (nativeCanvas.width !== frame.width || nativeCanvas.height !== frame.height) {
-        nativeCanvas.width = frame.width;
-        nativeCanvas.height = frame.height;
-        image = nativeContext.createImageData(frame.width, frame.height);
-      }
-      image ??= nativeContext.createImageData(frame.width, frame.height);
-      image.data.set(frame.rgba);
-      nativeContext.putImageData(image, 0, 0);
-      context.imageSmoothingEnabled = configRef.current.BilinearFilter;
-      context.drawImage(nativeCanvas, 0, 0, canvas.width, canvas.height);
+    const fail = (error: unknown) => {
+      if (generation !== loopGenerationRef.current) return;
+      cancelLoop();
+      audio.pause();
+      setState({ run: "error", lastError: `Emulation: ${String(error)}`, statusLine: "execution failed" });
     };
-    redrawRef.current = present;
+    void host.frame(rendererScale(configRef.current.Renderer)).catch(fail);
 
     const tick = () => {
-      if (machineRef.current !== machine || getState().run !== "running") return;
-      gamepadInput.poll(machine, configRef.current);
-      const cycleNow = performance.now();
-      const elapsed = Math.min(100, Math.max(0, cycleNow - lastCycleTime));
-      lastCycleTime = cycleNow;
-      const slices = cycleBudget.advance(elapsed);
-      for (let slice = 0; slice < slices; slice++) machine.runSlice(20_000);
-      present();
-      frames++;
+      if (generation !== loopGenerationRef.current || getState().run !== "running") return;
+      gamepadInput.poll(host, configRef.current);
       const now = performance.now();
+      const elapsed = Math.min(100, Math.max(0, now - lastCycleTime));
+      lastCycleTime = now;
+      void host.tick(elapsed).then((result) => {
+        if (generation !== loopGenerationRef.current || !result) return;
+        frames++;
+        if (!result.ok) {
+          cancelLoop();
+          audio.pause();
+          setState({ run: "paused", statusLine: `paused ${name}` });
+        }
+      }).catch(fail);
       if (now - lastFps >= 1000) {
         const fps = configRef.current.ShowFPS ? ` · ${frames} fps` : "";
         setState({ statusLine: `running ${name}${fps}` });
@@ -116,74 +129,47 @@ export function MainWindow() {
       }
       rafRef.current = requestAnimationFrame(tick);
     };
-    present();
     rafRef.current = requestAnimationFrame(tick);
-  }, [cancelLoop, gamepadInput]);
+  }, [audio, cancelLoop, gamepadInput, host, presenter]);
 
-  const boot = useCallback((buf: ArrayBuffer, name: string, mode: FileMode) => {
-    let bootStage = "PS-X EXE";
+  const boot = useCallback(async (buf: ArrayBuffer, name: string, mode: FileMode) => {
+    const operation = ++operationRef.current;
     cancelLoop();
     releasePads();
     audio.reset();
     void audio.resume();
+    setLoaded(null);
+    setState({ run: "loaded", lastError: "", statusLine: `loading ${name}` });
+    const settings = configRef.current;
     try {
-      const bytes = new Uint8Array(buf);
-      // BIOS dump (512 KiB) vs PS-EXE: size discriminator (load_bios spec).
-      if (bytes.byteLength === 512 * 1024 && (mode === "bios" || name.toLowerCase().includes("bios"))) {
-        const m = new Machine();
-        attachStoredMemoryCards(m, [configRef.current.Memcard1, configRef.current.Memcard2]);
-        gamepadInput.attach(m);
-        m.setAudioSink(audio);
-        m.setDynarecEnabled(configRef.current.Dynarec);
-        m.loadBios(bytes);
-        machineRef.current = m;
-        bootSourceRef.current = { buffer: buf, name, mode };
-        setLoaded(name);
-        setState({ run: "running", lastError: "", statusLine: `BIOS ${name} loaded` });
-        startLoop(name);
-        return;
-      }
-      let exeBytes = bytes;
-      bootStage = "PS-X EXE";
-      const m = new Machine();
-      attachStoredMemoryCards(m, [configRef.current.Memcard1, configRef.current.Memcard2]);
-      gamepadInput.attach(m);
-      m.setAudioSink(audio);
-      m.setDynarecEnabled(configRef.current.Dynarec);
-      if (name.toLowerCase().endsWith(".mdf")) {
-        const provider = createMdfSectorProvider(bytes);
-        m.setSectorProvider(provider);
-        bootStage = "front-end parse";
-        const frontendBytes = readIsoFile(provider, "cdrom:\\FE.EXE;1");
-        if (!frontendBytes) throw new Error("No front-end executable found in MDF");
-        const frontendExe = parsePsExe(frontendBytes);
-        m.loadExe(frontendBytes, frontendExe.pc0, frontendExe.t_addr, frontendExe.data);
-        bootStage = "front-end run";
-        for (let i = 0; i < 300; i++) m.runSlice(20_000);
-        bootStage = "game parse";
-        const gameBytes = readIsoFile(provider, "cdrom:\\GAME.EXE;1");
-        if (!gameBytes) throw new Error("No game executable found in MDF");
-        exeBytes = gameBytes;
-      }
-      const exe = parsePsExe(exeBytes);
-      m.loadExe(exeBytes, exe.pc0, exe.t_addr, exe.data);
-      machineRef.current = m;
-      bootSourceRef.current = { buffer: buf, name, mode };
+      const memoryCards = await Promise.all([
+        storedMemoryCard(settings.Memcard1), storedMemoryCard(settings.Memcard2),
+      ]) as [ArrayBuffer | undefined, ArrayBuffer | undefined];
+      if (operation !== operationRef.current) return;
+      const result = await host.boot(buf, name, mode, {
+        dynarec: settings.Dynarec,
+        renderer: rendererScale(settings.Renderer),
+        frontendSlices: 300,
+        memoryCards,
+      });
+      if (operation !== operationRef.current) return;
       setLoaded(name);
       setState({
         run: "running",
         lastError: "",
-        statusLine: `running ${name} (${(exe.t_size / 1024).toFixed(0)} KiB)`,
+        statusLine: result.source === "bios" ? `BIOS ${name} loaded`
+          : `running ${name} (${(result.payloadBytes / 1024).toFixed(0)} KiB)`,
       });
       startLoop(name);
-    } catch (e) {
-      machineRef.current = null;
-      bootSourceRef.current = null;
+    } catch (error) {
+      if (operation !== operationRef.current) return;
+      cancelLoop();
       redrawRef.current = () => {};
+      presenter.clear();
       setLoaded(null);
-      setState({ run: "error", lastError: `${bootStage}: ${String(e)}`, statusLine: "load failed" });
+      setState({ run: "error", lastError: `Boot: ${String(error)}`, statusLine: "load failed" });
     }
-  }, [cancelLoop, gamepadInput, releasePads, startLoop]);
+  }, [audio, cancelLoop, host, presenter, releasePads, startLoop]);
 
   const pause = useCallback(() => {
     if (getState().run !== "running" || !loaded) return;
@@ -191,62 +177,118 @@ export function MainWindow() {
     releasePads();
     audio.pause();
     setState({ run: "paused", statusLine: `paused ${loaded}` });
-  }, [cancelLoop, loaded, releasePads]);
+    void host.pause().catch((error) => {
+      setState({ run: "error", lastError: `Pause failed: ${String(error)}` });
+    });
+  }, [audio, cancelLoop, host, loaded, releasePads]);
 
-  const resume = useCallback(() => {
-    if (getState().run !== "paused" || !loaded || !machineRef.current) return;
+  const resume = useCallback(async () => {
+    if (getState().run !== "paused" || !loaded) return;
+    const operation = ++operationRef.current;
+    const name = loaded;
+    setState({ run: "loaded", lastError: "", statusLine: `resuming ${name}` });
+    try {
+      await host.resume();
+      if (operation !== operationRef.current) return;
+      void audio.resume();
+      setState({ run: "running", lastError: "", statusLine: `running ${name}` });
+      startLoop(name);
+    } catch (error) {
+      if (operation === operationRef.current) setState({ run: "error", lastError: `Resume failed: ${String(error)}` });
+    }
+  }, [audio, host, loaded, startLoop]);
+
+  const reset = useCallback(async () => {
+    if (!loaded) return;
+    const operation = ++operationRef.current;
+    const name = loaded;
+    cancelLoop();
+    releasePads();
+    audio.reset();
     void audio.resume();
-    setState({ run: "running", lastError: "", statusLine: `running ${loaded}` });
-    startLoop(loaded);
-  }, [loaded, startLoop]);
-
-  const reset = useCallback(() => {
-    const source = bootSourceRef.current;
-    if (source) boot(source.buffer, source.name, source.mode);
-  }, [boot]);
+    setLoaded(null);
+    setState({ run: "loaded", lastError: "", statusLine: `resetting ${name}` });
+    try {
+      const result = await host.reset();
+      if (operation !== operationRef.current) return;
+      await host.setRenderer(rendererScale(configRef.current.Renderer));
+      await host.setDynarec(configRef.current.Dynarec);
+      if (operation !== operationRef.current) return;
+      setLoaded(name);
+      setState({
+        run: "running", lastError: "",
+        statusLine: result.source === "bios" ? `BIOS ${name} loaded`
+          : `running ${name} (${(result.payloadBytes / 1024).toFixed(0)} KiB)`,
+      });
+      startLoop(name);
+    } catch (error) {
+      if (operation !== operationRef.current) return;
+      presenter.clear();
+      setLoaded(null);
+      setState({ run: "error", lastError: `Reset failed: ${String(error)}`, statusLine: "reset failed" });
+    }
+  }, [audio, cancelLoop, host, loaded, presenter, releasePads, startLoop]);
 
   const stop = useCallback(() => {
+    operationRef.current++;
     cancelLoop();
     releasePads();
     audio.pause();
-    machineRef.current = null;
-    bootSourceRef.current = null;
     redrawRef.current = () => {};
-    const canvas = canvasRef.current;
-    canvas?.getContext("2d")?.clearRect(0, 0, canvas.width, canvas.height);
+    presenter.clear();
     setLoaded(null);
     setState({ run: "idle", lastError: "", statusLine: "ready" });
-  }, [cancelLoop, releasePads]);
+    void host.stop().catch((error) => setState({ lastError: `Stop failed: ${String(error)}` }));
+  }, [audio, cancelLoop, host, presenter, releasePads]);
 
   const saveState = useCallback(async (slot: number) => {
-    const machine = machineRef.current;
-    if (!machine || !loaded) return;
+    if (!loaded) return;
     stateSlotRef.current = slot;
     try {
-      const bytes = machine.saveState();
-      await storeSaveState(loaded, slot, bytes);
+      const bytes = await host.saveState();
+      await storeSaveState(loaded, slot, new Uint8Array(bytes));
       setState({ lastError: "", statusLine: `saved state ${slot} · ${loaded}` });
     } catch (error) {
       setState({ lastError: `Save state ${slot} failed: ${String(error)}` });
     }
-  }, [loaded]);
+  }, [host, loaded]);
 
   const loadState = useCallback(async (slot: number) => {
-    const machine = machineRef.current;
-    if (!machine || !loaded) return;
+    if (!loaded) return;
+    const operation = ++operationRef.current;
+    const name = loaded;
     stateSlotRef.current = slot;
     cancelLoop();
+    releasePads();
+    audio.pause();
+    setState({ run: "loaded", lastError: "", statusLine: `loading state ${slot} · ${name}` });
     try {
-      const bytes = await loadStoredSaveState(loaded, slot);
+      if (host.state === "running") await host.pause();
+      const bytes = await loadStoredSaveState(name, slot);
       if (!bytes) throw new Error("No compatible state exists in this slot");
-      machine.loadState(bytes);
+      if (operation !== operationRef.current) return;
+      await host.loadState(exactBuffer(bytes));
+      if (operation !== operationRef.current) return;
       audio.reset();
-      setState({ run: "running", lastError: "", statusLine: `loaded state ${slot} · ${loaded}` });
-      startLoop(loaded);
+      void audio.resume();
+      setState({ run: "running", lastError: "", statusLine: `loaded state ${slot} · ${name}` });
+      startLoop(name);
     } catch (error) {
-      setState({ run: "paused", lastError: `Load state ${slot} failed: ${String(error)}` });
+      if (operation === operationRef.current) {
+        setState({ run: "paused", lastError: `Load state ${slot} failed: ${String(error)}` });
+      }
     }
-  }, [audio, cancelLoop, loaded, startLoop]);
+  }, [audio, cancelLoop, host, loaded, releasePads, startLoop]);
+
+  workerErrorRef.current = (error) => {
+    if (error.code !== "transport" && error.code !== "timeout") return;
+    operationRef.current++;
+    cancelLoop();
+    audio.pause();
+    presenter.clear();
+    setLoaded(null);
+    setState({ run: "error", lastError: `Worker: ${error.message}`, statusLine: "worker failed" });
+  };
 
   const toggleFullscreen = useCallback(async () => {
     try {
@@ -324,18 +366,39 @@ export function MainWindow() {
   }, [config.Pad1Bindings, config.Pad2Bindings, config.PadType1, config.PadType2, dialog, gamepadInput, releasePads]);
 
   useEffect(() => {
+    presenter.attach(canvasRef.current);
+    return () => presenter.attach(null);
+  }, [presenter]);
+
+  useEffect(() => {
     const unbind = bindAudioUnlock(audio, window);
     return () => {
       unbind();
-      machineRef.current?.setAudioSink(null);
       audio.dispose();
       cancelLoop();
     };
   }, [audio, cancelLoop]);
 
+  useEffect(() => () => {
+    operationRef.current++;
+    void host.dispose();
+  }, [host]);
+
   useEffect(() => audio.setVolume(config.AudioVolume), [audio, config.AudioVolume]);
   useEffect(() => audio.setMuted(muted), [audio, muted]);
-  useEffect(() => machineRef.current?.setDynarecEnabled(config.Dynarec), [config.Dynarec]);
+  useEffect(() => {
+    if (!loaded) return;
+    void host.setDynarec(config.Dynarec).catch((error) => {
+      setState({ lastError: `Dynarec configuration failed: ${String(error)}` });
+    });
+  }, [config.Dynarec, host, loaded]);
+  useEffect(() => {
+    if (!loaded) return;
+    const scale = rendererScale(config.Renderer);
+    void host.setRenderer(scale).then(() => host.frame(scale)).catch((error) => {
+      setState({ lastError: `Renderer configuration failed: ${String(error)}` });
+    });
+  }, [config.Renderer, host, loaded]);
 
   const onPick = useCallback((files: FileList | null, mode: FileMode) => {
     const file = files?.[0];
@@ -450,7 +513,7 @@ export function MainWindow() {
         </Dialog>
       )}
       {dialog === "gamepad" && <GamepadConfigDialog initialPort={gamepadPort} onClose={() => setDialog(null)} />}
-      {dialog === "memcard" && <MemcardDialog machine={machineRef.current} onClose={() => setDialog(null)} />}
+      {dialog === "memcard" && <MemcardDialog host={loaded ? host : null} onClose={() => setDialog(null)} />}
       {dialog === "about" && (
         <Dialog title="About ePSXe Web" onClose={() => setDialog(null)} showCancel={false} okLabel="Close">
           <div className="about-content">
