@@ -64,6 +64,49 @@ const NCDS_SF1 = 0x0048_0013; // NCDS sf=1 lm=0
 // 1. RTPS against hand-computed exact values (zero / ±1 / small inputs)
 // ---------------------------------------------------------------------------
 
+describe("Depth-cue and interpolation commands", () => {
+  function depthScene(): GTE {
+    const g = new GTE();
+    g.dr[8] = 0x1000; // IR0 = 1.0
+    g.dr[6] = 0x0040_2010; // R=16 G=32 B=64
+    g.cr[21] = 0x2000;
+    g.cr[22] = 0x3000;
+    g.cr[23] = 0x4000;
+    g.ir1 = 0x1000;
+    g.ir2 = 0x1000;
+    g.ir3 = 0x1000;
+    return g;
+  }
+
+  test("DPCS and DPCT use their documented RGB sources", () => {
+    const dpcs = depthScene();
+    dpcs.execute(0x10);
+    expect(dpcs.dr[22]).not.toBe(0);
+    const dpct = depthScene();
+    dpct.dr[20] = 0x0040_2010;
+    dpct.execute(0x2a);
+    expect(dpct.dr[22]).not.toBe(0);
+  });
+
+  test("INTPL and DCPL interpolate from their documented sources", () => {
+    const intpl = depthScene();
+    intpl.execute(0x11);
+    expect(intpl.dr[22]).not.toBe(0);
+    const dcpl = depthScene();
+    dcpl.execute(0x29);
+    expect(dcpl.dr[22]).not.toBe(0);
+  });
+
+  test("GPF and GPL produce interpolated color output", () => {
+    const gpf = depthScene();
+    gpf.execute(0x3d);
+    expect(gpf.dr[22]).not.toBe(0);
+    const gpl = depthScene();
+    gpl.execute(0x3e);
+    expect(gpl.dr[22]).not.toBe(0);
+  });
+});
+
 describe("Normal color command families", () => {
   function colorScene(): GTE {
     const g = new GTE();

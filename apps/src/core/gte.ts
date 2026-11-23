@@ -682,6 +682,12 @@ export class GTE {
     this.dr[7] = value;
   }
 
+  /** Depth-cue/interpolation tail shared by DPCS, DPCT, INTPL, DCPL, GPF, GPL. */
+  private colorInterpolate(inMac: number[], sf: boolean, lm: boolean): void {
+    this.interpolateColor(inMac, sf, lm);
+    this.pushRgbFromMac();
+  }
+
   /** SQR(sf) — no$psx 0A00428h: MAC = IR² SHR (sf*12); IR = MAC saturated
    *  to max +7FFFh (result is always ≥ 0, so lm has no effect). */
   private sqr(sf: boolean, lm: boolean): void {
@@ -795,6 +801,54 @@ export class GTE {
 
       case 0x2d: this.avsz(3); break;
       case 0x2e: this.avsz(4); break;
+
+      case 0x10: { // DPCS
+        const rgb = this.dr[6]!;
+        this.colorInterpolate([(rgb & 0xff) << 16, ((rgb >>> 8) & 0xff) << 16, ((rgb >>> 16) & 0xff) << 16], sf, lm);
+        break;
+      }
+
+      case 0x11: { // INTPL
+        this.colorInterpolate([this.ir1, this.ir2, this.ir3].map(v => v << 12), sf, lm);
+        break;
+      }
+
+      case 0x29: { // DCPL
+        const rgb = this.dr[6]!;
+        this.colorInterpolate([(rgb & 0xff) * this.ir1 * 16, ((rgb >>> 8) & 0xff) * this.ir2 * 16, ((rgb >>> 16) & 0xff) * this.ir3 * 16], sf, lm);
+        break;
+      }
+
+      case 0x2a: { // DPCT
+        const rgb0 = this.dr[20]!;
+        const r = (rgb0 & 0xff) << 16, g = ((rgb0 >>> 8) & 0xff) << 16, b = ((rgb0 >>> 16) & 0xff) << 16;
+        for (const index of [0, 1, 2]) {
+          this.colorInterpolate([r, g, b], sf, lm);
+        }
+        break;
+      }
+
+      case 0x3d: { // GPF
+        const shift = sf ? 12 : 0;
+        const inMac = [0, 0, 0];
+        for (let i = 1; i <= 3; i++) {
+          this.setMac(i as 1 | 2 | 3, this.dr[8 + i]! * this.dr[8]! + inMac[i - 1]!, shift);
+          this.setIr(i as 1 | 2 | 3, this.dr[24 + i]!, lm);
+        }
+        this.pushRgbFromMac();
+        break;
+      }
+
+      case 0x3e: { // GPL
+        const shift = sf ? 12 : 0;
+        const base = [this.dr[25]!, this.dr[26]!, this.dr[27]!];
+        for (let i = 1; i <= 3; i++) {
+          this.setMac(i as 1 | 2 | 3, this.dr[8 + i]! * this.dr[8]! + base[i - 1]!, shift);
+          this.setIr(i as 1 | 2 | 3, this.dr[24 + i]!, lm);
+        }
+        this.pushRgbFromMac();
+        break;
+      }
 
       case 0x30: // RTPT = RTPS over V0, V1, V2 (no$psx 0280030h)
         this.rtps(this.v[0]!, this.v[1]!, this.v[2]!, sf, lm, false);
