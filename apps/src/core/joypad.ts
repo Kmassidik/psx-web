@@ -152,7 +152,7 @@ export class Joypad {
 
   /** Model the controller's Analog button, including a software mode lock. */
   setAnalogMode(port: JoypadPort, enabled: boolean): void {
-    if (this.analogLocked[port]) return;
+    if (this.analogLocked[port] || this.analog[port] === enabled) return;
     this.analog[port] = enabled;
     this.config[port] = false;
     this.resetRumble(port);

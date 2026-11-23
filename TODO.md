@@ -6,7 +6,7 @@ Detailed execution plan for turning the current emulator checkpoint into a relia
 
 - Docker UI is available at `http://localhost:5174`.
 - 3Xtreme reaches `FE.EXE` → `GAME.EXE`; the loading screen transitions to MISSION after the boot fixes.
-- 3Xtreme reaches a real MISSION screen and accepts controller input; a race is not verified, so do not describe it as playable.
+- 3Xtreme reaches a real MISSION screen and an animated race; Start-only input accelerates and steers in the browser.
 - The BIOS-free/HLE route is selected. A real BIOS remains optional and user-supplied.
 - Latest full-suite checkpoint: 407 tests passing and TypeScript clean; repeatable browser E2E also passes.
 - RCNT MMIO and handler timer waits are fixed; extended runs transfer full CD sectors without the previous invalid control flow.
@@ -118,7 +118,7 @@ Detailed execution plan for turning the current emulator checkpoint into a relia
 
 **Acceptance:** Tests cover nested/adjacent event delivery and state restoration; 3Xtreme loads without depending on a broad address-range hack or skipped instructions.
 
-### [ ] 1.5 Reach and verify the 3Xtreme title screen
+### [x] 1.5 Reach and verify the 3Xtreme title screen
 
 **Goal:** Produce a recognizable title/menu frame rendered by the game.
 
@@ -134,7 +134,7 @@ Detailed execution plan for turning the current emulator checkpoint into a relia
 
 ## Phase 2 — Input, menus, and real gameplay
 
-### [ ] 2.1 Implement and verify the complete digital controller protocol
+### [x] 2.1 Implement and verify the complete digital controller protocol
 
 **Goal:** Make title/menu navigation reliable through the real pad interface.
 
@@ -147,7 +147,7 @@ Detailed execution plan for turning the current emulator checkpoint into a relia
 
 **Acceptance:** The title menu responds predictably to each mapped control; protocol tests verify byte order, ACK/IRQ behavior, and release/re-press transitions.
 
-### [ ] 2.2 Navigate from the title screen into a race
+### [x] 2.2 Navigate from the title screen into a race
 
 **Goal:** Demonstrate actual gameplay, not just a rendered menu.
 
