@@ -20,7 +20,7 @@ export type JoypadPort = 0 | 1;
 
 /**
  * SIO0 controller port and a PS1 dual-shock peripheral. Transfers complete
- * immediately; /ACK is represented by STAT.7 until the next byte or ERRRST.
+ * immediately; /ACK asserts after 100 cycles and pulses low for 100 cycles.
  * The peripheral starts in digital mode, but supports the standard config
  * commands used to enable analog sticks and either rumble motor.
  */
@@ -35,9 +35,10 @@ export class Joypad {
   private ctrl = 0;
   private baud = 0x88;
   private ack = false;
-  private irq = false;
   private ackDelay = 0;
+  private ackPulse = 0;
   private ackIrqPending = false;
+  private irq = false;
 
   private readonly connected = [true, true];
   private readonly cards: Array<MemoryCard | undefined> = [undefined, undefined];
@@ -163,16 +164,12 @@ export class Joypad {
       this.baud = 0x88;
       this.rx.length = 0;
       this.ack = this.irq = false;
-      this.ackDelay = 0;
-      this.ackIrqPending = false;
       this.resetTransaction();
       return;
     }
 
     if ((value & CTRL_ERRRST) !== 0) {
-      this.ack = this.irq = false;
-      this.ackDelay = 0;
-      this.ackIrqPending = false;
+      this.irq = false;
     }
     const next = value & CTRL_READ_MASK;
     const selectionChanged = (next & CTRL_PORT) !== (this.ctrl & CTRL_PORT);
@@ -183,7 +180,7 @@ export class Joypad {
 
   private transfer(value: number): void {
     this.ack = false;
-    this.ackDelay = 0;
+    this.ackDelay = this.ackPulse = 0;
     this.ackIrqPending = false;
     if ((this.ctrl & (CTRL_TXEN | CTRL_DTR)) !== (CTRL_TXEN | CTRL_DTR)) {
       this.receive(0xff);
@@ -347,6 +344,8 @@ export class Joypad {
 
   private resetTransaction(): void {
     this.ack = false;
+    this.ackDelay = this.ackPulse = 0;
+    this.ackIrqPending = false;
     this.cards[this.packetPort]?.reset();
     this.response = [];
     this.sent = [];
@@ -361,17 +360,26 @@ export class Joypad {
     this.ackIrqPending = (this.ctrl & CTRL_DSRIEN) !== 0;
   }
 
-  /** Advance the hardware acknowledge delay in CPU cycles. */
+  /** Advance /ACK assertion, its low pulse, and the associated IRQ edge. */
   tick(cycles: number): void {
-    if (this.ackDelay === 0) return;
-    this.ackDelay = Math.max(0, this.ackDelay - cycles);
-    if (this.ackDelay !== 0) return;
-    this.ack = true;
-    if (this.ackIrqPending) {
-      this.ackIrqPending = false;
-      this.irq = true;
-      this.irqFire(7);
+    let remaining = cycles;
+    if (this.ackDelay !== 0) {
+      const elapsed = Math.min(remaining, this.ackDelay);
+      this.ackDelay -= elapsed;
+      remaining -= elapsed;
+      if (this.ackDelay === 0) {
+        this.ack = true;
+        this.ackPulse = 100;
+        if (this.ackIrqPending) {
+          this.ackIrqPending = false;
+          this.irq = true;
+          this.irqFire(7);
+        }
+      }
     }
+    if (this.ackPulse === 0 || remaining === 0) return;
+    this.ackPulse = Math.max(0, this.ackPulse - remaining);
+    if (this.ackPulse === 0) this.ack = false;
   }
 
   private receive(value: number): void {
