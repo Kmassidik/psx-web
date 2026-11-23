@@ -71,6 +71,27 @@ if (args.includes("--handler-trace")) {
   let active = 0;
   const counts = new Map<number, number>();
   const hleCounts = new Map<string, number>();
+  let loopReads = 0;
+  const step = machine.cpu.step.bind(machine.cpu);
+  machine.cpu.step = () => {
+    const pc = machine.cpu.pc >>> 0;
+    if (active && pc === 0x8002bae0 && loopReads++ < 24) {
+      const pA = machine.mem.load32(0x8004fd5c) >>> 0;
+      const pB = machine.mem.load32(0x8004fd60) >>> 0;
+      const a = (machine["portRead"](pA) ?? 0) & 0xffff;
+      const b = (machine["portRead"](pB) ?? 0) & 0xffff;
+      const saved = machine.mem.load32(0x8004ed00) & 0xffff;
+      console.log(`redispatch saved=${hex(saved, 4)} pA=${hex(pA)} pB=${hex(pB)} a=${hex(a, 4)} b=${hex(b, 4)} mask=${hex(saved & a & b, 4)} irq=${hex(machine.irqStatus)}/${hex(machine.irqMask)}`);
+    }
+    return step();
+  };
+  const portWrite = machine["portWrite"].bind(machine);
+  machine["portWrite"] = (va, value, width) => {
+    if (active && va === 0x1f801070) console.log(`guest I_STAT write ${hex(value)} from ${hex(machine.cpu.pc)}`);
+    const result = portWrite(va, value, width);
+    if (active && va === 0x1f801070) console.log(`I_STAT after ${hex(machine.irqStatus)}`);
+    return result;
+  };
   const hle = machine.cpu.hleSyscall!;
   Object.defineProperty(machine.cpu, "hleSyscall", { value: (table: number, fn: number) => {
     if (active) {

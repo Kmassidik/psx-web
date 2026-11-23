@@ -24,7 +24,7 @@ canvas pipeline, with `rgb(0,255,0)` verified in browser E2E. 3Xtreme reaches
 its front-end/game executables and renders a red loading bar, but has **not**
 reached a title screen or gameplay and is not yet described as playable.
 
-Current verification: 377 unit/integration tests, strict TypeScript, and a
+Current verification: 385 unit/integration tests, strict TypeScript, and a
 repeatable browser E2E scenario covering rendering, run controls, fullscreen,
 audio unlock/mute/volume, persisted settings, and Native/2×/4× geometric rendering. See `TODO.md` for remaining
 commercial-game, persistence, performance, and compatibility work.
