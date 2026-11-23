@@ -314,6 +314,7 @@ export class Machine {
         break;
       }
       this.rcnt.tick(1);
+      this.joypad.tick(1);
       this.vblankAcc++;
       if (this.vblankAcc >= 563_000) {
         this.vblankAcc -= 563_000;
@@ -370,6 +371,7 @@ export class Machine {
       this.cpu.invalidateCode(0x84, 0x88);
     }
     const ok = this.cpu.run(n);
+    this.joypad.tick(n);
     if (deliverException) {
       if ((pendingIrq & IRQ_VBLANK) !== 0) this.runInterruptChain();
       else this.runHandler(this.kernel.interruptHandler(0), "vblank");

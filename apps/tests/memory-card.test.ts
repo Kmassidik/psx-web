@@ -36,6 +36,7 @@ function packet(
   const ack: boolean[] = [];
   for (const tx of [address, command, ...tail]) {
     joy.write(DATA, tx);
+    joy.tick(100);
     reply.push(joy.read(DATA)!);
     ack.push((joy.read(STAT)! & 0x80) !== 0);
     joy.write(CTRL, joy.read(CTRL)! | 0x10);

@@ -28,6 +28,7 @@ function packet(joy: Joypad, command: number, tail: number[], port: JoypadPort =
   const ack: boolean[] = [];
   for (const tx of [0x01, command, ...tail]) {
     joy.write(DATA, tx);
+    joy.tick(100);
     reply.push(joy.read(DATA)!);
     ack.push((joy.read(STAT)! & 0x80) !== 0);
     joy.write(CTRL, joy.read(CTRL)! | 0x10); // acknowledge /ACK and STAT.9
@@ -55,6 +56,19 @@ function enterConfig(joy: Joypad, analog = false): void {
 function digital(joy: Joypad, small = 0, large = 0): Packet {
   return normal(joy, 0x42, [small, large]);
 }
+
+describe("SIO0 acknowledge timing", () => {
+  test("ACK is delayed for 100 CPU cycles", () => {
+    const { joy } = fixture();
+    joy.write(CTRL, SELECTED);
+    joy.write(DATA, 1);
+    expect(joy.read(STAT)! & 0x80).toBe(0);
+    joy.tick(99);
+    expect(joy.read(STAT)! & 0x80).toBe(0);
+    joy.tick(1);
+    expect(joy.read(STAT)! & 0x80).toBe(0x80);
+  });
+});
 
 describe("SIO0 digital controller", () => {
   test("returns ID and little-endian active-low buttons with release/re-press", () => {
@@ -87,6 +101,7 @@ describe("SIO0 digital controller", () => {
 
     joy.write(CTRL, SELECTED);
     joy.write(DATA, 0x01);
+    joy.tick(100);
     expect(joy.read(STAT)! & 0x280).toBe(0x280);
     joy.write(CTRL, joy.read(CTRL)! | 0x10);
     expect(joy.read(STAT)! & 0x280).toBe(0);
@@ -95,6 +110,7 @@ describe("SIO0 digital controller", () => {
     const irqCountBeforeDisabledTransfer = irqs.length;
     joy.write(CTRL, 0x0003); // same transfer with DSR interrupts disabled
     joy.write(DATA, 0x01);
+    joy.tick(100);
     expect(joy.read(STAT)! & 0x280).toBe(0x80);
     expect(irqs).toHaveLength(irqCountBeforeDisabledTransfer);
     joy.write(CTRL, 0);

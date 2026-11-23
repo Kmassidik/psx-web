@@ -36,6 +36,8 @@ export class Joypad {
   private baud = 0x88;
   private ack = false;
   private irq = false;
+  private ackDelay = 0;
+  private ackIrqPending = false;
 
   private readonly connected = [true, true];
   private readonly cards: Array<MemoryCard | undefined> = [undefined, undefined];
@@ -161,11 +163,17 @@ export class Joypad {
       this.baud = 0x88;
       this.rx.length = 0;
       this.ack = this.irq = false;
+      this.ackDelay = 0;
+      this.ackIrqPending = false;
       this.resetTransaction();
       return;
     }
 
-    if ((value & CTRL_ERRRST) !== 0) this.ack = this.irq = false;
+    if ((value & CTRL_ERRRST) !== 0) {
+      this.ack = this.irq = false;
+      this.ackDelay = 0;
+      this.ackIrqPending = false;
+    }
     const next = value & CTRL_READ_MASK;
     const selectionChanged = (next & CTRL_PORT) !== (this.ctrl & CTRL_PORT);
     const chipSelectChanged = (next & CTRL_DTR) !== (this.ctrl & CTRL_DTR);
@@ -175,6 +183,8 @@ export class Joypad {
 
   private transfer(value: number): void {
     this.ack = false;
+    this.ackDelay = 0;
+    this.ackIrqPending = false;
     if ((this.ctrl & (CTRL_TXEN | CTRL_DTR)) !== (CTRL_TXEN | CTRL_DTR)) {
       this.receive(0xff);
       return;
@@ -347,8 +357,18 @@ export class Joypad {
   }
 
   private acknowledge(): void {
+    this.ackDelay = 100;
+    this.ackIrqPending = (this.ctrl & CTRL_DSRIEN) !== 0;
+  }
+
+  /** Advance the hardware acknowledge delay in CPU cycles. */
+  tick(cycles: number): void {
+    if (this.ackDelay === 0) return;
+    this.ackDelay = Math.max(0, this.ackDelay - cycles);
+    if (this.ackDelay !== 0) return;
     this.ack = true;
-    if ((this.ctrl & CTRL_DSRIEN) !== 0) {
+    if (this.ackIrqPending) {
+      this.ackIrqPending = false;
       this.irq = true;
       this.irqFire(7);
     }
