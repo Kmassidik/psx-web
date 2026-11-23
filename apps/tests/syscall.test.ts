@@ -80,6 +80,24 @@ describe("BIOS-free kernel services", () => {
     for (let reg = 16; reg <= 23; reg++) expect(m.cpu.r[reg]).toBe(0x1000 + reg);
   });
 
+  test("BIOS timer functions program mode, read/restart counters, and update IRQ masks", () => {
+    const m = new Machine();
+    m.installHleVectors();
+    expect(call(m, 0xb0, 0x02, 1, 42, 0)).toBe(1);
+    expect(m.rcnt.regs[5]).toBe(42);
+    expect(m.rcnt.regs[4]).toBe(0x148);
+    expect(call(m, 0xb0, 0x03, 1)).toBe(0);
+    expect(call(m, 0xb0, 0x04, 0)).toBe(1);
+    expect(m.irqMask & 0x10).toBe(0x10);
+    expect(call(m, 0xb0, 0x04, 3)).toBe(0);
+    expect(m.irqMask & 1).toBe(1);
+    expect(call(m, 0xb0, 0x05, 0)).toBe(1);
+    expect(m.irqMask & 0x10).toBe(0);
+    m.rcnt.regs[3] = 99;
+    expect(call(m, 0xb0, 0x06, 1)).toBe(1);
+    expect(m.rcnt.regs[3]).toBe(0);
+  });
+
   test("legacy pad reads active-low X and direction buttons", () => {
     const m = new Machine();
     m.installHleVectors();

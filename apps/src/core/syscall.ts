@@ -123,6 +123,7 @@ export class BiosKernel {
   }
 
   private cCall(fn: number): number {
+    if (fn === 0x08 || fn === 0x09) return 0;
     if (fn === 0x02) {
       this.interruptHandlers.unshift({
         priority: this.cpu.r[4]!,
@@ -232,6 +233,38 @@ export class BiosKernel {
         if (size === undefined) return 0;
         this.kernelAllocations.delete(address);
         if (address + size === this.state.kernelNext) this.state.kernelNext = address;
+        return 1;
+      }
+      case 0x02: { // init_timer(t,reload,flags)
+        const timer = handle;
+        if (timer > 2) return 0;
+        this.cpu.ports.write32(0x1f80_1104 + timer * 16, 0, 32);
+        this.cpu.ports.write32(0x1f80_1108 + timer * 16, this.cpu.r[5]!, 32);
+        let mode = (this.cpu.r[6]! & 0x10) !== 0 ? 0x0049 : 0x0048;
+        if ((this.cpu.r[6]! & 1) === 0) mode |= 0x100;
+        if ((this.cpu.r[6]! & 0x1000) !== 0) mode |= 0x10;
+        this.cpu.ports.write32(0x1f80_1104 + timer * 16, mode, 32);
+        return 1;
+      }
+      case 0x03: { // get_timer(t)
+        if (handle > 2) return 0;
+        return (this.cpu.ports.read32(0x1f80_1100 + handle * 16) ?? 0) & 0xffff;
+      }
+      case 0x04: { // enable_timer_irq(t)
+        if (handle > 3) return 0;
+        const mask = this.cpu.ports.read32(0x1f80_1074) ?? 0;
+        this.cpu.ports.write32(0x1f80_1074, mask | (1 << (handle === 3 ? 0 : handle + 4)), 32);
+        return handle === 3 ? 0 : 1;
+      }
+      case 0x05: { // disable_timer_irq(t)
+        if (handle > 3) return 0;
+        const mask = this.cpu.ports.read32(0x1f80_1074) ?? 0;
+        this.cpu.ports.write32(0x1f80_1074, mask & ~(1 << (handle === 3 ? 0 : handle + 4)), 32);
+        return 1;
+      }
+      case 0x06: { // restart_timer(t)
+        if (handle > 2) return 0;
+        this.cpu.ports.write32(0x1f80_1100 + handle * 16, 0, 32);
         return 1;
       }
       case 0x07: // DeliverEvent(class, spec)
