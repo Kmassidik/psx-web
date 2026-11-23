@@ -22,6 +22,10 @@ interface Checkpoint {
   gpu: string;
   nonBlack: number;
   handlerTruncations: number;
+  vblankAcc: number;
+  handlerEntry: number;
+  customExit: number;
+  cpuStatus: number;
 }
 
 interface CdromDebug {
@@ -61,6 +65,13 @@ const provider = (lba: number) => {
 };
 const machine = new Machine();
 if (args.includes("--dynarec")) machine.setDynarecEnabled(true);
+if (args.includes("--no-dequeue") || args.includes("--no-close-event")) {
+  const kernel = machine["kernel"] as unknown as { cCall(fn: number): number; bCall(fn: number): number };
+  const cCall = kernel.cCall.bind(machine["kernel"]);
+  kernel.cCall = (fn) => fn === 0x03 && args.includes("--no-dequeue") ? 0 : cCall(fn);
+  const bCall = kernel.bCall.bind(machine["kernel"]);
+  kernel.bCall = (fn) => fn === 0x09 && args.includes("--no-close-event") ? 1 : bCall(fn);
+}
 if (args.includes("--no-exception-hook")) {
   const runHandler = machine["runHandler"].bind(machine);
   machine["runHandler"] = (entry, kind) => {
@@ -204,6 +215,10 @@ function checkpoint(slice: number, includePixels = true): Checkpoint {
     gpu: `${hex(machine.gpu.gpur1)}/${hex(machine.gpu.gpur2)}`,
     nonBlack: includePixels ? nonBlackPixels() : 0,
     handlerTruncations: machine.diagnostics.handlerTruncations,
+    vblankAcc: machine["vblankAcc"],
+    handlerEntry: (machine["kernel"] as unknown as { interruptHandler(): number }).interruptHandler(),
+    customExit: (machine["kernel"] as unknown as { customExitAddress: number }).customExitAddress,
+    cpuStatus: machine.cpu.cp0[12]!,
   };
 }
 
