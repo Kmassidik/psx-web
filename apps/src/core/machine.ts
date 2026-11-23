@@ -225,7 +225,7 @@ export class Machine {
   }
 
   private runVblankHandler(): void {
-    this.runHandler(this.kernel.interruptHandler(), "vblank");
+    this.runHandler(this.kernel.interruptHandler(1), "vblank");
   }
 
   private runEventCallbacks(): void {
@@ -362,6 +362,7 @@ export class Machine {
   }
 
   loadExe(bytes: Uint8Array, pc0: number, tAddr: number, data: Uint8Array): void {
+    this.kernel.resetInterruptState();
     this.mem.ram.set(data, tAddr);
     this.installHleVectors(); // BIOS-free boot: A/B/C call vectors
     this.cpu.reset(pc0);

@@ -75,8 +75,13 @@ export class BiosKernel {
     return this.cCall(fn);
   }
 
-  interruptHandler(): number {
-    return this.interruptHandlers[0]?.first ?? 0;
+  resetInterruptState(): void {
+    this.interruptHandlers.length = 0;
+    this.customExit = 0;
+  }
+
+  interruptHandler(priority = 1): number {
+    return this.interruptHandlers.find((handler) => handler.priority === priority)?.first ?? 0;
   }
 
   exceptionHook(): number {
