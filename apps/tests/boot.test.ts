@@ -140,6 +140,12 @@ describe("SPU audio attachment", () => {
 });
 
 describe("Hardware interrupt delivery", () => {
+  test("I_STAT acknowledges selected IRQs by clearing zero bits", () => {
+    const m = new Machine();
+    m.irqStatus = 0x000f;
+    m["portWrite"](0x1f801070, 0xfffffffe, 16);
+    expect(m.irqStatus).toBe(0x000e);
+  });
   test("masked pending IRQ enters the handler and RFE returns to EPC", () => {
     const m = new Machine();
     m.installHleVectors();
@@ -247,7 +253,7 @@ describe("Hardware interrupt delivery", () => {
     let line = -1;
     m.rcnt.irqFire = (value) => { line = value; };
     m.rcnt.regs[0] = 9;
-    m.rcnt.regs[1] = 0x100;
+    m.rcnt.regs[1] = 0x10;
     m.rcnt.regs[2] = 10;
     m.runSlice(1);
     expect(line).toBe(4);

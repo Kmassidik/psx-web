@@ -162,7 +162,7 @@ export class Machine {
 
   private portWrite(va: number, v: number, width: number): boolean {
     switch (va) {
-      case 0x1f801070: this.irqStatus &= ~v; return true; // ack clears
+      case 0x1f801070: this.irqStatus &= v; return true; // I_STAT is write-0-clear
       case 0x1f801074: this.irqMask = v >>> 0; return true;
       case 0x1f801810: this.gpu.writeGP0(v); return true;
       case 0x1f801814: this.gpu.writeGP1(v); return true;
@@ -268,15 +268,6 @@ export class Machine {
       if (!this.cpu.step()) break;
       if (this.kernel.consumeExceptionReturn()) break;
       this.rcnt.tick(1);
-      this.vblankAcc++;
-      if (this.vblankAcc >= 563_000) {
-        this.vblankAcc -= 563_000;
-        this.kernel.updatePads();
-        this.gpu.toggleField();
-        this.raiseIrq(IRQ_VBLANK);
-        this.kernel.deliver(0xf200_0003, 0x02);
-        this.kernel.deliver(0xf000_0001, 0x1000);
-      }
       if (steps % 20_000 === 0) {
         this.runDma();
         this.cdrom.pump();
