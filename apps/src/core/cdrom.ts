@@ -19,8 +19,8 @@ export class Cdrom {
   readonly regs = new Uint8Array(16);
   /** Current raw 2352-byte sector payload (host-fed disc image). */
   readonly sectorBuffer = new Uint8Array(2352);
-  /** IRQ hook; line 2 = CDROM interrupt. */
-  irqFire: (line: number) => void = () => {};
+  /** IRQ hook; line 2 = CDROM interrupt, kind = response INT number. */
+  irqFire: (line: number, kind?: number) => void = () => {};
 
   // FIFOs
   private paramFifo: number[] = [];
@@ -136,8 +136,9 @@ export class Cdrom {
         if (idx === 0) return 0;
         return this.regs[6]!; // audio volume/apply mirror
       }
-      case 1:
-      case 2: {
+      case 2:
+        return this.readData8();
+      case 1: {
         // Response fifo read. no$psx: after the
         // last real byte the buffer is 00h-padded to the end of 16 bytes,
         // then restarts at the first response byte.
@@ -182,6 +183,17 @@ export class Cdrom {
     }
   }
 
+  /** Read one byte from the current sector's user data. */
+  readData8(): number {
+    const start = (this.modeReg & 0x08) !== 0 ? 12 : 24;
+    const size = (this.modeReg & 0x08) !== 0 ? 2340 : 2048;
+    if (!this.sectorReady || this.dataOffset >= size) return 0;
+    const value = this.sectorBuffer[start + this.dataOffset]!;
+    this.dataOffset++;
+    if (this.dataOffset >= size) this.sectorReady = false;
+    return value;
+  }
+
   /** Read one little-endian word from the current sector's user data. */
   readData32(): number {
     const start = (this.modeReg & 0x08) !== 0 ? 12 : 24;
@@ -209,6 +221,7 @@ export class Cdrom {
     // acknowledge and re-issue.
     if (this.cmd !== -1 || this.queued.length > 0 || (this.regs[5]! & 0x07) !== 0)
       return;
+    this.stat &= ~0x01; // a newly accepted command clears the previous error status
     this.busy = true; // command transmission busy until first response
     this.cmdParams = this.paramFifo.splice(0); // command consumes the FIFO
     this.cmd = op;
@@ -466,11 +479,13 @@ export class Cdrom {
     this.respIdx = 0;
     this.regs[5] = int & 0x07; // Interrupt Flag read value (1F801803 idx1)
     this.regs[4] = this.regs[4]! | 0x1f; // IEN default: all set
-    this.irqFire(2); // CDROM IRQ line
+    this.irqFire(2, int); // CDROM IRQ line
     if (int === 5) {
       // Error response: stat bit0/2 set in data[0], latch error byte.
       if ((data[0] ?? 0) & 0x01) this.errCode = data[1] ?? 0;
       this.stat |= 0x01;
+    } else {
+      this.stat &= ~0x01; // successful response clears a previous error status
     }
   }
 

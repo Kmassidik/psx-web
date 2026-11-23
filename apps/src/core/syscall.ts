@@ -13,6 +13,14 @@ interface InterruptHandler {
   first: number;
 }
 
+export interface ExceptionContext {
+  pc: number;
+  sp: number;
+  fp: number;
+  gp: number;
+  s: number[];
+}
+
 interface BiosEvent {
   handle: number;
   class: number;
@@ -43,6 +51,18 @@ export class BiosKernel {
   ) {
     this.installTable(0xb0, 0x1000, 0x1400);
     this.installTable(0xc0, 0x2000, 0x2400);
+    // BIOS-internal CDROM events: acknowledge, complete, data ready, end, error.
+    for (const spec of [0x10, 0x20, 0x40, 0x80, 0x8000]) {
+      this.events.push({
+        handle: this.state.nextEvent++,
+        class: 0xf000_0003 | 0,
+        spec,
+        mode: 0x2000,
+        func: 0,
+        enabled: true,
+        ready: false,
+      });
+    }
   }
 
   private installTable(vector: number, table: number, stubs: number): void {
@@ -67,6 +87,18 @@ export class BiosKernel {
 
   exceptionHook(): number {
     return this.customExit === 0 ? 0 : this.cpu.mem.load32(this.customExit);
+  }
+
+  exceptionContext(): ExceptionContext | undefined {
+    if (this.customExit === 0) return undefined;
+    const address = this.customExit;
+    return {
+      pc: this.cpu.mem.load32(address),
+      sp: this.cpu.mem.load32(address + 4),
+      fp: this.cpu.mem.load32(address + 8),
+      s: Array.from({ length: 8 }, (_, index) => this.cpu.mem.load32(address + 12 + index * 4)),
+      gp: this.cpu.mem.load32(address + 44),
+    };
   }
 
   updatePads(): number {

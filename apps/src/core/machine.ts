@@ -20,7 +20,7 @@ import { Gpu, VRAM_W, VRAM_H } from "./gpu";
 import { Rcnt } from "./rcnt";
 import { GTE } from "./gte";
 import { Dma } from "./dma";
-import { BiosKernel } from "./syscall";
+import { BiosKernel, type ExceptionContext } from "./syscall";
 import { Cdrom } from "./cdrom";
 import { Spu } from "./spu";
 import { Mdec } from "./mdec";
@@ -65,7 +65,11 @@ export class Machine {
       // SPU DMA (channel 4) completion: libspu reports "command completed".
       if ((this.dma.dicr & (1 << 4)) !== 0) this.kernel.deliver(0xf000_0009, 0x20);
     };
-    this.cdrom.irqFire = () => { this.raiseIrq(IRQ_CDROM); };
+    this.cdrom.irqFire = (_line, kind) => {
+      this.raiseIrq(IRQ_CDROM);
+      const spec = kind === 1 ? 0x40 : kind === 2 ? 0x20 : kind === 3 ? 0x10 : kind === 4 ? 0x80 : 0x8000;
+      this.kernel.deliver(0xf000_0003, spec);
+    };
     this.spu.irqFire = () => { this.raiseIrq(IRQ_SPU); };
     this.cpu = new Cpu(this.mem, this.rcnt, this.gte, {
       read32: (va) => this.portRead(va),
@@ -193,7 +197,7 @@ export class Machine {
     for (const callback of this.kernel.takeEventCallbacks()) this.runHandler(callback);
   }
 
-  private runHandler(entry: number): void {
+  private runHandler(entry: number, context?: ExceptionContext): void {
     if (entry === 0) return;
     const registers = this.cpu.r.slice();
     const cp0 = this.cpu.cp0.slice();
@@ -201,6 +205,12 @@ export class Machine {
     const hi = this.cpu.hi, lo = this.cpu.lo;
     const inBranchDelay = this.cpu.inBranchDelay;
     const loadDelay = { ...this.cpu.loadDelay };
+    if (context) {
+      this.cpu.r[29] = context.sp;
+      this.cpu.r[30] = context.fp;
+      this.cpu.r[28] = context.gp;
+      for (let i = 0; i < 8; i++) this.cpu.r[16 + i] = context.s[i]!;
+    }
     this.cpu.cp0[13] = 0x400;
     this.cpu.cp0[14] = pc;
     this.cpu.r[2] = 1; // custom exception hooks are entered with v0 = 1
@@ -230,17 +240,16 @@ export class Machine {
       this.mem.store32(0x84, 0x4200_0010);
     }
     const ok = this.cpu.run(n);
-    if (deliverException) this.runHandler(this.kernel.exceptionHook());
-    if ((this.irqStatus & this.irqMask & IRQ_CDROM) !== 0) {
-      this.irqStatus &= ~IRQ_CDROM;
-      this.cdrom.ack(0x07);
-      this.kernel.deliver(0xf000_0003, 0x1000);
+    if (deliverException) {
+      const context = this.kernel.exceptionContext();
+      this.runHandler(context?.pc ?? this.kernel.exceptionHook(), context);
     }
     this.runDma();
     this.runEventCallbacks();
     this.cdrom.pump();
     this.cdrom.exec(); // one interrupt-bucket per slice (timing: see cdrom.ts)
     this.spu.tick(n); // SPU clock = cpu cycles / 768 internally
+    this.rcnt.tick(n);
     // VBLANK: ~60Hz — accumulate CPU cycles and raise IRQ line 0 each frame
     // (N = cycles/frame ≈ 33.8M/60 ≈ 563k at 33.8MHz CPU).
     this.vblankAcc += n;
@@ -248,6 +257,8 @@ export class Machine {
       this.vblankAcc -= 563_000;
       this.kernel.updatePads();
       this.raiseIrq(IRQ_VBLANK);
+      this.kernel.deliver(0xf200_0003, 0x02);
+      this.kernel.deliver(0xf000_0001, 0x1000);
       this.runVblankHandler();
     }
     // rcnt ticks on the same clock; slice granularity is fine for Phase 1
@@ -259,10 +270,13 @@ export class Machine {
     this.installHleVectors(); // BIOS-free boot: A/B/C call vectors
     this.cpu.reset(pc0);
     // crt0 register state the BIOS normally sets before _start.
-    this.cpu.r[28] = 0x801f_ff00; // $gp
-    this.cpu.r[29] = 0x801f_ff00; // $sp
-    this.cpu.r[30] = 0x801f_ff00; // $fp
-    this.cpu.r[31] = 0x8000_0068; // $ra → exit-loop stub
+    const header = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+    const initialGp = header.getUint32(0x14, true);
+    const initialSp = header.getUint32(0x30, true);
+    this.cpu.r[28] = initialGp | 0;
+    this.cpu.r[29] = initialSp === 0 ? 0x801f_ff00 : initialSp | 0;
+    this.cpu.r[30] = this.cpu.r[29]!;
+    this.cpu.r[31] = 0x8000_0100; // $ra → exit-loop stub
     this.cpu.r[5] = -1; // $r5 < 0: crt0's BLTZ preamble takes the save path
     this.mem.store32(0x100, 0x1000_0002); // beq $0,$0,+2 = spin
     this.mem.store32(0x104, 0); // delay-slot nop

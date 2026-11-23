@@ -9,7 +9,7 @@ function readSector(provider: SectorProvider, lba: number): Uint8Array | undefin
   return raw && raw.length >= 24 + USER_SIZE ? raw.subarray(24, 24 + USER_SIZE) : undefined;
 }
 
-function readExtent(provider: SectorProvider, lba: number, size: number): Uint8Array | undefined {
+function readExtent(provider: SectorProvider, lba: number, size: number): Uint8Array<ArrayBuffer> | undefined {
   const result = new Uint8Array(size);
   for (let offset = 0; offset < size; offset += USER_SIZE) {
     const sector = readSector(provider, lba + offset / USER_SIZE);
@@ -50,7 +50,7 @@ function records(data: Uint8Array): DirectoryRecord[] {
 }
 
 /** Resolve a CDROM path such as `cdrom:\B\EXTREME3.EXE;1` to its file bytes. */
-export function readIsoFile(provider: SectorProvider, path: string): Uint8Array | undefined {
+export function readIsoFile(provider: SectorProvider, path: string): Uint8Array<ArrayBuffer> | undefined {
   const pvd = readSector(provider, 16);
   if (!pvd || pvd[0] !== 1 || String.fromCharCode(...pvd.subarray(1, 6)) !== "CD001") return undefined;
   const view = new DataView(pvd.buffer, pvd.byteOffset, pvd.byteLength);

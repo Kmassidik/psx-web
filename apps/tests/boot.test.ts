@@ -163,10 +163,13 @@ describe("Hardware interrupt delivery", () => {
     const m = new Machine();
     m.installHleVectors();
     m.mem.store32(0x10000, 0x2408_0001);
-    m.mem.store32(0x10004, 0xac28_0000);
+    m.mem.store32(0x10004, 0xafa8_0000); // SW t0, 0(sp) — must use saved sp
     m.mem.store32(0x10008, 0x03e0_0008);
     m.mem.store32(0x1000c, 0);
     m.mem.store32(0x400, 0x8001_0000); // SaveState r31/pc
+    m.mem.store32(0x404, 0x500); // saved sp
+    m.mem.store32(0x408, 0x600); // saved fp
+    m.mem.store32(0x42c, 0x700); // saved gp
     m.cpu.reset(0xb0);
     m.cpu.r[9] = 0x19;
     m.cpu.r[4] = 0x400;
@@ -183,14 +186,26 @@ describe("Hardware interrupt delivery", () => {
     expect(m.cpu.r[31]).toBe(0x8001_2345 | 0);
   });
 
-  test("BIOS CDROM service acknowledges controller and I_STAT", () => {
+  test("runSlice advances timer zero and raises IRQ4 at target", () => {
+    const m = new Machine();
+    let line = -1;
+    m.rcnt.irqFire = (value) => { line = value; };
+    m.rcnt.regs[0] = 9;
+    m.rcnt.regs[1] = 0x100;
+    m.rcnt.regs[2] = 10;
+    m.runSlice(1);
+    expect(line).toBe(4);
+    expect(m.rcnt.regs[0]).toBe(10);
+  });
+
+  test("CDROM auto-ack is disabled by default", () => {
     const m = new Machine();
     m.irqStatus = 1 << 2;
     m.irqMask = 1 << 2;
     m.cdrom.regs[5] = 3;
     m.runSlice(1);
-    expect(m.irqStatus & (1 << 2)).toBe(0);
-    expect(m.cdrom.regs[5]).toBe(0);
+    expect(m.irqStatus & (1 << 2)).toBe(1 << 2);
+    expect(m.cdrom.regs[5]).toBe(3);
   });
 });
 

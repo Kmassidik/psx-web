@@ -319,6 +319,14 @@ describe("CDROM error / latch behavior", () => {
     expect(c.getErrorCode()).toBe(0x10);
   });
 
+  test("successful command clears a previous error status", () => {
+    const { c } = make();
+    c.write(1, 0x7f);
+    c.ack(0x07);
+    c.write(1, 0x01);
+    expect(c.read(1) & 1).toBe(0);
+  });
+
   test("reset() restores power-up state", () => {
     const { c } = make();
     c.write(1, 0x1a);
@@ -346,6 +354,16 @@ describe("CDROM register 3 interrupt flags", () => {
 });
 
 describe("CDROM sector data DMA", () => {
+  test("data port returns sector bytes rather than response bytes", () => {
+    const c = new Cdrom();
+    const sector = new Uint8Array(2352);
+    sector[24] = 0x78;
+    sector[25] = 0x56;
+    c.setSectorData(sector);
+    expect(c.read(2)).toBe(0x78);
+    expect(c.read(2)).toBe(0x56);
+  });
+
   test("readData32 streams exactly 2048 user bytes", () => {
     const c = new Cdrom();
     const sector = new Uint8Array(2352);

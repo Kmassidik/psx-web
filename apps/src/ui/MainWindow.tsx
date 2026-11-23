@@ -6,6 +6,8 @@
  */
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import { parsePsExe } from "../core/loader/psexe";
+import { createMdfSectorProvider } from "../core/loader/mdf";
+import { readIsoFile } from "../core/loader/iso9660";
 import { Machine } from "../core/machine";
 import { setConfig, setState, useApp } from "./store";
 import { VideoConfigDialog } from "./dialogs/VideoConfigDialog";
@@ -14,6 +16,15 @@ import { MemcardDialog } from "./dialogs/MemcardDialog";
 
 type FileMode = "auto" | "exe" | "bios";
 type DialogName = "video" | "gamepad" | "memcard";
+
+const PAD_BITS: Record<string, number> = {
+  x: 0x0040, // Cross
+  Enter: 0x0800, // Start
+  ArrowUp: 0x1000,
+  ArrowRight: 0x2000,
+  ArrowDown: 0x4000,
+  ArrowLeft: 0x8000,
+};
 
 interface MenuItemProps {
   label: string;
@@ -80,9 +91,17 @@ export function MainWindow() {
         setState({ run: "running", lastError: "", statusLine: `BIOS ${name} loaded — drop a PS-X EXE or CUE/BIN next` });
         return;
       }
-      const exe = parsePsExe(bytes);
+      let exeBytes = bytes;
       const m = new Machine();
-      m.loadExe(bytes, exe.pc0, exe.t_addr, exe.data);
+      if (name.toLowerCase().endsWith(".mdf")) {
+        const provider = createMdfSectorProvider(bytes);
+        m.setSectorProvider(provider);
+        const discExe = readIsoFile(provider, "cdrom:\\B\\EXTREME3.EXE;1");
+        if (!discExe) throw new Error("No supported boot executable found in MDF");
+        exeBytes = discExe;
+      }
+      const exe = parsePsExe(exeBytes);
+      m.loadExe(exeBytes, exe.pc0, exe.t_addr, exe.data);
       machineRef.current = m;
       setLoaded(name);
       setState({
@@ -125,10 +144,21 @@ export function MainWindow() {
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key === "Escape") setOpenMenu(null);
+      const bit = PAD_BITS[event.key];
+      if (bit && machineRef.current) {
+        event.preventDefault();
+        machineRef.current.pads.pad1 &= ~bit;
+      }
+    };
+    const onKeyUp = (event: KeyboardEvent) => {
+      const bit = PAD_BITS[event.key];
+      if (bit && machineRef.current) machineRef.current.pads.pad1 |= bit;
     };
     window.addEventListener("keydown", onKeyDown);
+    window.addEventListener("keyup", onKeyUp);
     return () => {
       window.removeEventListener("keydown", onKeyDown);
+      window.removeEventListener("keyup", onKeyUp);
       cancelAnimationFrame(rafRef.current);
     };
   }, []);
@@ -389,7 +419,7 @@ export function MainWindow() {
       <input
         ref={fileInput}
         type="file"
-        accept=".exe,.bin,.psexe,.psx"
+        accept=".exe,.bin,.psexe,.psx,.mdf"
         className="file-input"
         onChange={(event) => {
           const mode = fileMode.current;

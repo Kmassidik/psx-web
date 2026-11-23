@@ -35,7 +35,7 @@ describe("BIOS-free kernel services", () => {
     m.cpu.r[6] = 0x2000;
     m.cpu.r[31] = 0x200;
     for (let i = 0; i < 4; i++) m.cpu.step();
-    expect(m.cpu.r[2]).toBe(0xf100_0000 | 0);
+    expect(m.cpu.r[2]).toBe(0xf100_0005 | 0);
   });
 
   test("legacy pad reads active-low X and direction buttons", () => {
@@ -46,6 +46,25 @@ describe("BIOS-free kernel services", () => {
     m.pads.pad1 = 0xffff & ~0x40;
     expect(call(m, 0xb0, 0x16) & 0xffff).toBe(0xffbf);
     expect(m.mem.load32(0x400) & 0xffff).toBe(0xffbf);
+  });
+
+  test("VBlank delivery marks a registered VBlank event ready", () => {
+    const m = new Machine();
+    m.installHleVectors();
+    const event = call(m, 0xb0, 0x08, 0xf200_0003, 0x02, 0x2000);
+    call(m, 0xb0, 0x0c, event);
+    m.cpu.reset(0x8003_0000);
+    m.runSlice(563_000);
+    expect(call(m, 0xb0, 0x0b, event)).toBe(1);
+  });
+
+  test("CDROM acknowledge marks the internal acknowledge event ready", () => {
+    const m = new Machine();
+    m.installHleVectors();
+    m.cdrom.write(0, 1);
+    m.cdrom.write(1, 0x01);
+    expect(call(m, 0xb0, 0x0b, 0xf100_0000 | 0)).toBe(1);
+    expect(call(m, 0xb0, 0x0b, 0xf100_0000 | 0)).toBe(0);
   });
 
   test("callback-mode delivery executes the event function once", () => {
@@ -69,7 +88,7 @@ describe("BIOS-free kernel services", () => {
     const m = new Machine();
     m.installHleVectors();
     const event = call(m, 0xb0, 0x08, 0xf000_0009, 0x20, 0x2000);
-    expect(event).toBe(0xf100_0000 | 0);
+    expect(event).toBe(0xf100_0005 | 0);
     expect(call(m, 0xb0, 0x0b, event)).toBe(0);
     call(m, 0xb0, 0x0c, event);
     m.dma.dicr = 1 << 4;

@@ -24,7 +24,7 @@ export class Rcnt {
       for (let i = 0; i < cycles && !done; i += step) {
         v = (v + 1) & 0xffff;
         if (v === target && target !== 0 && (mode & 0x100)) {
-          this.irqFire(3 + t); // IRQ lines 3,4,5
+          this.irqFire(4 + t); // IRQ lines 4,5,6
           this.regs[t * 3 + 1] = (mode & 0xffff) | 0x400; // target reached flag
           if (mode & 0x1000) {
             v = 0; // zero-return: wrap and keep counting this slice
