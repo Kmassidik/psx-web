@@ -11,6 +11,8 @@
  */
 import { Memory, translate } from "./memory";
 import { Rcnt } from "./rcnt";
+import { Dynarec } from "./dynarec/blocks";
+import { UnsupportedInstructionError, type DynarecHooks } from "./dynarec/translator";
 
 export const EXC_LOAD = 0x4, EXC_STORE = 0x5, EXC_SYS = 0x8, EXC_BP = 0x9, EXC_OV = 0xc;
 
@@ -23,6 +25,31 @@ export class Cpu {
   inBranchDelay = false;
   loadDelay = { slot: 0, reg: 0, value: 0 }; // one pending load, PS1 has 1 slot
   cycles = 0;
+  private readonly dyn = new Dynarec();
+  private enabledDynarec = false;
+  private readonly dynHooks: DynarecHooks = {
+    read32: (va) => this.dynRead(va),
+    write32: (va, v) => this.dynWrite(va, v),
+    exit: () => {},
+    memory: this.dyn.memory,
+  };
+
+  get dynarecEnabled(): boolean { return this.enabledDynarec; }
+
+  /** Opt into cached block execution; step() always remains the interpreter. */
+  setDynarecEnabled(enabled: boolean): void {
+    this.enabledDynarec = enabled;
+  }
+
+  /** Invalidate blocks overlapping a code/data write from any bus master. */
+  invalidateCode(start: number, end: number): void {
+    this.dyn.invalidate(start, end);
+  }
+
+  /** Drop cached code after wholesale memory or saved-state replacement. */
+  flushDynarec(): void {
+    this.dyn.flush();
+  }
 
   constructor(
     readonly mem: Memory,
@@ -45,14 +72,43 @@ export class Cpu {
     this.inBranchDelay = false;
     this.loadDelay.slot = 0;
     this.cycles = 0;
+    this.dyn.flush();
   }
 
   /** Execute n instructions. Returns false on unhandled exception. */
   run(n: number): boolean {
-    for (let i = 0; i < n; i++) {
+    for (let i = 0; i < n;) {
+      if (this.enabledDynarec && this.validPc(this.pc)) {
+        try {
+          const count = this.dyn.run(
+            this.pc, (a) => this.mem.load32(a) | 0, this.dynHooks, this, n - i,
+          );
+          if (count !== 0) {
+            i += count;
+            continue;
+          }
+        } catch (e) {
+          // Translation finishes before any guest instruction executes, so an
+          // unsupported block can be replayed from its untouched entry state.
+          if (!(e instanceof UnsupportedInstructionError)) throw e;
+        }
+      }
       if (!this.step()) return false;
+      i++;
     }
     return true;
+  }
+
+  private validPc(pc: number): boolean {
+    const u = pc >>> 0;
+    const vector = u & 0x1fff_ffff;
+    const isVector = vector === 0xa0 || vector === 0xb0 || vector === 0xc0;
+    const isHleRam = u >= 0x8000_0100 && u < 0x8000_3000;
+    const isLowRam = u < 0x0080_0000;
+    const isInvalidKuseg = u < 0x8000_0000 && !isLowRam;
+    const isInvalidKseg0 = u >= 0x8080_0000 && u < 0xa000_0000;
+    if ((isInvalidKuseg || isInvalidKseg0) && !isVector && !isHleRam) return false;
+    return (translate(pc).region as number) >= 0;
   }
 
   step(): boolean {
@@ -63,15 +119,7 @@ export class Cpu {
       this.loadDelay.slot = 0;
     }
 
-    const pc = this.pc >>> 0;
-    const vector = pc & 0x1fff_ffff;
-    const isVector = vector === 0xa0 || vector === 0xb0 || vector === 0xc0;
-    const isHleRam = pc >= 0x8000_0100 && pc < 0x8000_3000;
-    const isLowRam = pc < 0x0080_0000;
-    const isInvalidKuseg = pc < 0x8000_0000 && !isLowRam;
-    const isInvalidKseg0 = pc >= 0x8080_0000 && pc < 0xa000_0000;
-    if ((isInvalidKuseg || isInvalidKseg0) && !isVector && !isHleRam) return false;
-    if ((translate(this.pc).region as number) < 0) return false; // unmapped instruction address
+    if (!this.validPc(this.pc)) return false;
     const instr = this.mem.load32(this.pc) | 0;
     const curPc = this.pc; // link/branch base BEFORE advancing
     this.pc = this.nextPc;
@@ -107,6 +155,7 @@ export class Cpu {
               // PSX kernel ABI: vector PC selects A/B/C; R9 ($t1) is the function.
               const fn = r[9]!;
               const ret = this.hleSyscall(table, fn) ?? 0;
+              this.dyn.flush(); // HLE handlers may synthesize or replace RAM code
               r[2] = ret | 0; // $v0
               this.pc = r[31]!; // return to caller (stub already did jr ra)
               this.nextPc = (r[31]! + 4) | 0;
@@ -271,6 +320,7 @@ export class Cpu {
         else if (n === 1) this.mem.store32(a & ~3, (old & 0xffff_0000) | (v >>> 16));
         else if (n === 2) this.mem.store32(a & ~3, (old & 0xff00_0000) | (v >>> 8));
         else this.mem.store32(a & ~3, v);
+        this.invalidateCode(a & ~3, (a & ~3) + 4);
         break;
       }
       case 0x2e: { // SWR — R_SWR @0x43afc0 byte-exact
@@ -280,6 +330,7 @@ export class Cpu {
         else if (n === 1) this.mem.store32(a & ~3, (old & 0xff) | (v << 8));
         else if (n === 2) this.mem.store32(a & ~3, (old & 0xffff) | (v << 16));
         else this.mem.store32(a & ~3, (old & 0x00ff_ffff) | (v << 24));
+        this.invalidateCode(a & ~3, (a & ~3) + 4);
         break;
       }
       case 0x27: return true; // CACHE — R3000A: no-op (PS1 has no cache ctrl)
@@ -294,12 +345,28 @@ export class Cpu {
       case 0x3a: { // SWC2 → GTE data reg
         const a = this.addr(rs, simm);
         this.mem.store32(a, this.gte.mfc2(rt & 15));
+        this.invalidateCode(a, a + 4);
         return true;
       }
 
             default: return false; // unknown major opcode
     }
     return true;
+  }
+
+  private dynRead(va: number): number {
+    if (va & 3) {
+      let v = 0;
+      for (let k = 0; k < 4; k++) v |= this.mem.load8(va + k) << (8 * k);
+      return v | 0;
+    }
+    const mmio = va >= 0x1f80_1000 && va <= 0x1f80_1fff ? this.ports.read32(va) : undefined;
+    return (mmio !== undefined ? mmio : this.mem.load32(va)) | 0;
+  }
+
+  private dynWrite(va: number, v: number): void {
+    this.writeValue(va, v, 32);
+    this.invalidateCode(va, va + 4);
   }
 
   private addr(rs: number, simm: number): number {
@@ -343,30 +410,33 @@ export class Cpu {
   }
 
   private store(rt: number, va: number, width: number): boolean {
+    this.writeValue(va, this.r[rt]!, width);
+    this.invalidateCode(va, va + width / 8);
+    return true;
+  }
+
+  private writeValue(va: number, v: number, width: number): void {
     if (width !== 8 && (va & (width / 8 - 1)) !== 0) {
       // BIOS handler emulates the unaligned store byte-wise.
-      const v = this.r[rt]!;
       if (width === 16) {
         this.mem.store8(va, v & 0xff);
         this.mem.store8(va + 1, (v >>> 8) & 0xff);
       } else {
         for (let k = 0; k < 4; k++) this.mem.store8(va + k, (v >>> (8 * k)) & 0xff);
       }
-      return true;
+      return;
     }
-    const v = this.r[rt]!;
     // MMIO ports first: preserve the CPU access width for byte/halfword registers.
-    if (va >= 0x1f80_1000 && va <= 0x1f80_1fff && this.ports.write32(va, v, width)) return true;
+    if (va >= 0x1f80_1000 && va <= 0x1f80_1fff && this.ports.write32(va, v, width)) return;
     if (width === 32) {
       this.mem.store32(va, v);
-      return true;
+      return;
     }
     if (width === 8) this.mem.store8(va, v);
     else {
       this.mem.store8(va, v & 0xff);
       this.mem.store8(va + 1, (v >>> 8) & 0xff);
     }
-    return true;
   }
 
   private branch(off: number): void {
