@@ -328,7 +328,10 @@ export class Machine {
       this.cpu.invalidateCode(0x84, 0x88);
     }
     const ok = this.cpu.run(n);
-    if (deliverException) this.runHandler(this.kernel.exceptionHook(), "exception");
+    if (deliverException) {
+      this.runHandler(this.kernel.interruptHandler(0), "vblank");
+      this.runHandler(this.kernel.exceptionHook(), "exception");
+    }
     this.runDma();
     const spuComplete = (this.dma.dicr & (1 << 4)) !== 0;
     if (spuComplete && !this.spuDmaDone) this.kernel.deliver(0xf000_0009, 0x20);
