@@ -422,6 +422,24 @@ describe("CDROM sector data DMA", () => {
     expect(c.read(2)).toBe(0x56);
   });
 
+  test("Setmode bit 5 streams 2340 bytes starting at the sector header", () => {
+    const c = new Cdrom();
+    c.write(0, 0);
+    c.write(2, 0x20);
+    c.write(1, 0x0e);
+    c.ack(0x07);
+    const sector = new Uint8Array(2352);
+    sector[12] = 0x42;
+    sector[12 + 2339] = 0xa5;
+    c.setSectorData(sector);
+    c.write(0, 0);
+    c.write(3, 0x80);
+    expect(c.readData8()).toBe(0x42);
+    for (let i = 1; i < 2339; i++) c.readData8();
+    expect(c.readData8()).toBe(0xa5);
+    expect(c.readData8()).toBe(0);
+  });
+
   test("readData32 streams exactly 2048 user bytes", () => {
     const c = new Cdrom();
     const sector = new Uint8Array(2352);

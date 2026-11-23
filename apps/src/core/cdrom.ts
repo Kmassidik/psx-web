@@ -186,8 +186,8 @@ export class Cdrom {
 
   /** Read one byte from the current sector's user data. */
   readData8(): number {
-    const start = (this.modeReg & 0x08) !== 0 ? 12 : 24;
-    const size = (this.modeReg & 0x08) !== 0 ? 2340 : 2048;
+    const start = (this.modeReg & 0x20) !== 0 ? 12 : 24;
+    const size = (this.modeReg & 0x20) !== 0 ? 2340 : 2048;
     if (!this.dataEnabled || !this.sectorReady || this.dataOffset >= size) return 0;
     const value = this.sectorBuffer[start + this.dataOffset]!;
     this.dataOffset++;
@@ -201,8 +201,8 @@ export class Cdrom {
 
   /** Read one little-endian word from the current sector's user data. */
   readData32(): number {
-    const start = (this.modeReg & 0x08) !== 0 ? 12 : 24;
-    const size = (this.modeReg & 0x08) !== 0 ? 2340 : 2048;
+    const start = (this.modeReg & 0x20) !== 0 ? 12 : 24;
+    const size = (this.modeReg & 0x20) !== 0 ? 2340 : 2048;
     if (!this.dataEnabled || !this.sectorReady || this.dataOffset >= size) return 0;
     const offset = start + this.dataOffset;
     this.dataOffset += 4;
