@@ -586,6 +586,74 @@ describe("MDEC colored macroblock golden vectors", () => {
       for (let px = 1; px < 256; px++) expect(out[px * 3]!).toBe(v);
     }
   });
+
+  test("known block: hand-computed RGB24 macroblock with ACs decodes exactly", () => {
+    // Deterministic end-to-end vector. Setup: uniform quant tables of 16,
+    // standard scale matrix. Stream (halfwords, per block: header, ACs, EOB):
+    //   Cr: q=8 DC=0            Cb: q=8 DC=0
+    //   Y1: q=8 DC=+32, AC k=1 (raster 1, u=1,v=0) level +12
+    //       dequant (12*16*8+4)/8 = 192 (unsaturated)
+    //   Y2..Y4: q=8 DC=+32
+    // Chroma is zero so R=G=B=Y. Pixel(x,y) = DC 64 + (satv/8)*(1/4)*Cu*Cv
+    // *cos(1,x)*cos(v,y) with satv = 12*16*8 (verified formula, constant down
+    // columns):
+    //   x: 0   1   2   3   4   5   6   7
+    //      97  92  83  71  57  45  36  31
+    const expectedY1 = [97, 92, 83, 71, 57, 45, 36, 31];
+    const m = new Mdec();
+    setupStandard(m);
+    const hs = [
+      (8 << 10) | 0, 0xfe00, // Cr
+      (8 << 10) | 0, 0xfe00, // Cb
+      (8 << 10) | 32, (0 << 10) | 12, 0xfe00, // Y1 + AC
+      (8 << 10) | 32, 0xfe00, // Y2
+      (8 << 10) | 32, 0xfe00, // Y3
+      (8 << 10) | 32, 0xfe00, // Y4
+    ];
+    const out = decodeStream(m, hs, 2);
+    expect(out.length).toBe(256 * 3);
+    for (let y = 0; y < 16; y++) {
+      for (let x = 0; x < 16; x++) {
+        const o = (y * 16 + x) * 3;
+        // Chroma zero: all channels equal the luma value.
+        const xr = x < 8 ? x : x - 8;
+        const blk = y < 8 ? (x < 8 ? 0 : 1) : x < 8 ? 2 : 3;
+        const expected = blk === 0 ? expectedY1[xr]! + 128 : 192;
+        expect(out[o]!).toBe(expected);
+        expect(out[o + 1]!).toBe(expected);
+        expect(out[o + 2]!).toBe(expected);
+      }
+    }
+  });
+
+  test("known block: every zigzag index lands at its spec raster with the float-DCT amplitude", () => {
+    // For each k in 1..63 a single AC (run k-1, level 12, q=8, qt=16) must
+    // appear at raster ZIGZAG[k] with the exact JPEG 2D-DCT basis amplitude
+    // (satv/8) * (1/4)*Cu*Cv*cos(u,x)*cos(v,y), ±1 LSB fixed point, where
+    // Cu = 1/√2 for u=0 else 1. The AAN fast IDCT reproduces the standard
+    // DCT (worst fixed-point error measured: 0.51 LSB over all 63 bases).
+    // Level 12 keeps every predicted pixel within ±48 so the ±128 clamp can
+    // never hide a wrong coefficient.
+    const m = new Mdec();
+    setupStandard(m);
+    const cs = (u: number, x: number): number => Math.cos(((2 * x + 1) * u * Math.PI) / 16);
+    const cNorm = (u: number): number => (u === 0 ? Math.SQRT1_2 : 1);
+    const satv = 12 * 16 * 8; // undivided dequant product v*qt*q
+    for (let k = 1; k < 64; k++) {
+      const dest = ZIGZAG[k]!;
+      const u = dest & 7;
+      const v = dest >> 3;
+      const out = decodeStream(m, [(8 << 10) | 0, ((k - 1) << 10) | 12, 0xfe00], 1, true);
+      const pixels = new Int8Array(out.buffer, out.byteOffset, out.length);
+      for (let y = 0; y < 8; y++) {
+        for (let x = 0; x < 8; x++) {
+          const expected = (satv / 8) * 0.25 * cNorm(u) * cNorm(v) * cs(u, x) * cs(v, y);
+          const got = pixels[y * 8 + x]!;
+          expect(Math.abs(expected - got)).toBeLessThanOrEqual(1);
+        }
+      }
+    }
+  });
 });
 
 // ---------------------------------------------------------------------------

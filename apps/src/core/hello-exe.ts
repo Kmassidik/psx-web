@@ -21,16 +21,16 @@ function j(target: number): number {
 
 export const HELLO_PC = 0x8001_0000;
 
-export function buildHelloExe(bgr555 = 0x03e0): { bytes: Uint8Array; pc0: number; t_addr: number } {
+export function buildHelloExe(rgb24 = 0x00_ff_00): { bytes: Uint8Array; pc0: number; t_addr: number } {
   const code: number[] = [
     lui(8, 0x1f80), // t0 = 0x1F800000 (GP0 base segment)
     ori(8, 8, 0x1810), // t0 = GP0
-    lui(9, 0x0200), // t1 = 0x02000000 (FillVRAM opcode)
-    ori(9, 9, bgr555), // t1 |= color (BGR555)
+    lui(9, 0x0200 | ((rgb24 >>> 16) & 0xff)), // t1 = 0x0200Bb00 (cmd + blue byte)
+    ori(9, 9, rgb24 & 0xffff), // t1 |= GgRr
     sw(9, 8, 0), // GP0 = color command
     sw(0, 8, 0), // GP0 = x:0 y:0
-    lui(10, 0x0200), // t2 = size word: h=512 (bits 16+)
-    ori(10, 10, 0x0400), // t2 |= w=1024 (bits 0-9) → 0x02000400
+    lui(10, 0x01ff), // t2 = size word: h=511 (0x1FF = full 512-row fill)
+    ori(10, 10, 0x03ff), // t2 |= w=1023 → rounds up to 1024 (0x400) per no$psx
     sw(10, 8, 0), // GP0 = size → fill executes
   ];
   // loop: j self + nop, at 0x80010000 + 9*4 = 0x80010024

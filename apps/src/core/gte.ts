@@ -863,4 +863,85 @@ export class GTE {
 
     this.updateErrorBit();
   }
+
+  // -- named data-register accessors (no$psx "GTE Data Register Summary") ---
+
+  /**
+   * cop2r15 SXYP — "SXY2-mirror with move-on-write" (no$psx Screen XYZ
+   * Coordinate FIFOs): reading returns SXY2 unchanged; writing pushes the
+   * SXY FIFO (SXY2→SXY1→SXY0) and then stores the written value as the new
+   * SXY2. Unlike SXY2 itself, a write moves the other FIFO entries.
+   */
+  get sxyp(): number {
+    return this.sxy2;
+  }
+  set sxyp(value: number) {
+    this.dr[12] = this.dr[13]!;
+    this.dr[13] = this.dr[14]!;
+    this.dr[14] = value | 0;
+  }
+
+  /**
+   * cop2r28 IRGB — color conversion input (no$psx): expands 5:5:5 RGB
+   * (0..1Fh each) to 16:16:16 (0000h..0F80h) into IR1,IR2,IR3, each
+   * component multiplied by 80h. Bits 15-31 unused.
+   */
+  get irgb(): number {
+    const c5 = (v: number): number => Math.min(0x1f, Math.max(0, v >>> 7));
+    return (c5(this.dr[9]!) & 0x1f) | ((c5(this.dr[10]!) & 0x1f) << 5) | ((c5(this.dr[11]!) & 0x1f) << 10);
+  }
+  set irgb(value: number) {
+    this.dr[9] = (value & 0x1f) * 0x80;
+    this.dr[10] = ((value >>> 5) & 0x1f) * 0x80;
+    this.dr[11] = ((value >>> 10) & 0x1f) * 0x80;
+  }
+
+  /**
+   * cop2r29 ORGB — color conversion output, read-only mirror of IR1..3
+   * (no$psx): collapses 16:16:16 to 5:5:5 by dividing by 80h; negatives
+   * (and values in 8000h..FFFFh unsigned window) saturate to 00h, values
+   * above 0F80h saturate to 1Fh. No FLAG bits are set.
+   */
+  get orgb(): number {
+    const c5 = (v: number): number => {
+      if ((v & 0xffff) >= 0x8000) return 0; // negative → 00h
+      return Math.min(0x1f, (v & 0xffff) >>> 7);
+    };
+    return (c5(this.dr[9]!) & 0x1f) | ((c5(this.dr[10]!) & 0x1f) << 5) | ((c5(this.dr[11]!) & 0x1f) << 10);
+  }
+}
+
+/**
+ * GTE command execution cycles per no$psx "GTE Command Summary (sorted by
+ * Real Opcode bits)"; unknown/N/A opcodes report 0. Keyed by the real
+ * opcode in instruction bits 0-5.
+ */
+const GTE_CYCLES: Record<number, number> = {
+  0x01: 15, // RTPS
+  0x06: 8, // NCLIP
+  0x0c: 6, // OP
+  0x10: 8, // DPCS
+  0x11: 8, // INTPL
+  0x12: 8, // MVMVA
+  0x13: 19, // NCDS
+  0x14: 13, // CDP
+  0x16: 44, // NCDT
+  0x1b: 17, // NCCS
+  0x1c: 11, // CC
+  0x1e: 14, // NCS
+  0x20: 30, // NCT
+  0x28: 5, // SQR
+  0x29: 8, // DCPL
+  0x2a: 17, // DPCT
+  0x2d: 5, // AVSZ3
+  0x2e: 6, // AVSZ4
+  0x30: 23, // RTPT
+  0x3d: 5, // GPF
+  0x3e: 5, // GPL
+  0x3f: 39, // NCCT
+};
+
+/** Cycles for a raw COP2 instruction (bits 0-5); undocumented opcodes → 0. */
+export function instructionCycles(instr: number): number {
+  return GTE_CYCLES[instr & 0x3f] ?? 0;
 }

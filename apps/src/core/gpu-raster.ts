@@ -30,16 +30,23 @@
  *   linear VRAM offset clutBase (16 entries for 4bpp, 256 for 8bpp).
  *   Texel color modulates the primitive color PS1-style: texel8 =
  *   (t<<3)|(t>>2), f8 = (texel8 * col8) >> 7 clamped to 255 (col8 = 128 is
- *   unity) [UNVERIFIED: rounding of the modulation]. Texture window NOT
- *   implemented (not required this phase); texel coords wrap modulo VRAM
- *   size [UNVERIFIED: hardware wrap window].
- * - Blending (per no$psx, per 5-bit channel, integer approximations):
- *   0: B + (F>>1)   (1.0B + 0.5F)
+ *   unity) [UNVERIFIED: rounding of the modulation]. Texture window (GP0 E2h)
+ *   is applied per no$psx: Texcoord = (coord AND NOT(Mask*8)) OR
+ *   ((Offset AND Mask)*8); afterwards UVs wrap inside the 256×256-texel page.
+ * - Blending (no$psx GP0(E1h) ABR, per 5-bit channel, clamped to 0..31):
+ *   0: (B + F) / 2  (B/2 + F/2)
  *   1: B + F        (1.0B + 1.0F)
  *   2: B - F        (1.0B - 1.0F)
  *   3: B + (F>>2)   (1.0B + 0.25F)
- *   each clamped to 0..31. Applied when prim.semiTrans, or when a CLUT /
- *   15bpp texel carries its STP bit (15).
+ *   ABE applies unconditionally to untextured primitives; textured
+ *   primitives blend only where the texel carries bit 15 (STP).
+ * - Dither (GP0(E1h).DTD): applies only to gouraud-shaded or textured
+ *   (modulated) polygons and to lines (mono lines included, no$psx line
+ *   note); flat monochrome polygons/rectangles ignore it.
+ * - Lines (GP0 40h..5Fh): integer DDA over the scaled grid, BOTH endpoints
+ *   drawn (lines include their lower-right coordinate, unlike polygons).
+ *   Segments longer than 1023×511 texels are refused (no$psx Rendering
+ *   Attributes size restriction).
  * - Set-mask-bit handling: NOT implemented this phase (optional per plan).
  * - Quads: drawn as two triangles (v0,v1,v2) + (v1,v2,v3) sharing the
  *   v1-v2 diagonal, mirroring the PS1 hardware decomposition [UNVERIFIED:
@@ -57,16 +64,29 @@ export interface PrimVert {
 }
 
 export interface Prim {
-  kind: "tri" | "quad";
+  /** "line"/"polyline" render consecutive vertex pairs, endpoints included. */
+  kind: "tri" | "quad" | "line" | "polyline";
   vertices: PrimVert[];
   colorMode: "flat" | "gouraud";
   textured: boolean;
   blendMode: 0 | 1 | 2 | 3;
+  /** Raw GP0(E1h) value: TBX/TBY/ABR/TPF/DTD/TBY2 (see sampleTexel). */
   texPage: number;
   clutBase: number;
   texWindow: number;
   dither: boolean;
   semiTrans: boolean;
+  /**
+   * Command bit 24 on textured prims: raw texture — texels are used
+   * unmodulated and undithered (the color word is ignored). Default
+   * false = modulated/blended.
+   */
+  rawTex: boolean;
+  /**
+   * Rectangles exclude their lower-right pixel (no$psx); polygons/lines
+   * include it. Only rasterizeRect sets this.
+   */
+  exclusiveEnd?: boolean;
 }
 
 /** Standard PS1 dither table (no$psx GPU chapter, spec-copied). */
@@ -194,21 +214,29 @@ interface Texel {
 function sampleTexel(vram: Uint16Array, prim: Prim, u: number, v: number): Texel {
   const rd = (i: number): number =>
     i >= 0 && i < vram.length ? vram[i]! : 0;
+  // prim.texPage is the raw GP0(E1h) register value: bits 0-3 TBX (×64
+  // halfwords), bit 4 TBY (×256), bits 5-6 ABR, bits 7-8 TPF, bit 9 DTD,
+  // bit 11 TBY2 (2MB VRAM Y base, ignored on 1MB consoles).
   const texX = (prim.texPage & 0xf) * 64;
-  const texY = ((prim.texPage >> 4) & 1) * 256;
+  const texY = (((prim.texPage >> 4) & 1) + ((prim.texPage >> 11) & 1) * 2) * 256;
   const mode = (prim.texPage >> 7) & 3;
-  let uu = u;
-  let vv = v;
-  if (prim.texWindow !== undefined && prim.texWindow !== 0) {
-    const maskX = prim.texWindow & 0x1f;
-    const offX = (prim.texWindow >>> 5) & 0x1f;
-    const maskY = (prim.texWindow >>> 10) & 0x1f;
-    const offY = (prim.texWindow >>> 15) & 0x1f;
-    uu = ((u & maskX) | offX) & 1023;
-    vv = ((v & maskY) | offY) & 511;
+  // Texture window (no$psx GP0(E2h)): Mask/Offset are in 8-texel steps.
+  //   Texcoord = (coord AND NOT(Mask*8)) OR ((Offset AND Mask)*8)
+  // Then the coordinate wraps inside the 256×256-texel page (no$psx:
+  // "the area within a texture window is repeated throughout the texture
+  // page"; page size is 256 texels in both axes for every color mode).
+  let uu: number, vv: number;
+  const tw = prim.texWindow;
+  if (tw !== undefined && tw !== 0) {
+    const maskX = (tw & 0x1f) * 8;
+    const offX = (((tw >>> 10) & 0x1f) & (tw & 0x1f)) * 8;
+    const maskY = ((tw >>> 5) & 0x1f) * 8;
+    const offY = ((((tw >>> 15) & 0x1f) & ((tw >>> 5) & 0x1f)) * 8);
+    uu = ((u & ~maskX) | offX) & 255;
+    vv = ((v & ~maskY) | offY) & 255;
   } else {
-    uu = u & 1023;
-    vv = v & 511;
+    uu = u & 255;
+    vv = v & 255;
   }
   if (mode === 0) {
     // 4bpp CLUT: 4 texels per halfword
@@ -244,7 +272,12 @@ function putPixel(
   texel: Texel | null,
 ): void {
   let r5: number, g5: number, b5: number;
-  if (texel !== null) {
+  if (texel !== null && prim.rawTex) {
+    // Raw texture (command bit 24): texel color used as-is, no modulation.
+    r5 = to5(texel.c & 31, ditherX, ditherY, false);
+    g5 = to5((texel.c >> 5) & 31, ditherX, ditherY, false);
+    b5 = to5((texel.c >> 10) & 31, ditherX, ditherY, false);
+  } else if (texel !== null) {
     // PS1 modulation: texel8 = (t<<3)|(t>>2); f8 = texel8*col8 >> 7.
     const mod = (t5: number, c8: number): number => {
       const t8 = (t5 << 3) | (t5 >> 2);
@@ -255,14 +288,24 @@ function putPixel(
     g5 = to5(mod((texel.c >> 5) & 31, g8), ditherX, ditherY, prim.dither);
     b5 = to5(mod((texel.c >> 10) & 31, b8), ditherX, ditherY, prim.dither);
   } else {
-    r5 = to5(r8, ditherX, ditherY, prim.dither);
-    g5 = to5(g8, ditherX, ditherY, prim.dither);
-    b5 = to5(b8, ditherX, ditherY, prim.dither);
+    // no$psx: dither affects ONLY gouraud/modulated polygons, plus lines
+    // (mono included). Flat mono polygons and rectangles strip the LSBs.
+    const canDither = prim.dither &&
+      (prim.colorMode === "gouraud" || texel !== null || prim.kind === "line" || prim.kind === "polyline");
+    r5 = to5(r8, ditherX, ditherY, canDither);
+    g5 = to5(g8, ditherX, ditherY, canDither);
+    b5 = to5(b8, ditherX, ditherY, canDither);
   }
   const idx = y * stride + x;
   const back = vram[idx]!;
-  const stp = texel !== null && texel.stp;
-  if (!prim.semiTrans && !stp) {
+  // no$psx: semi-transparency processes pixels whose color data has its STP
+  // bit set — for CLUT/15bpp texels that is the texel's bit 15, and untextured
+  // pixels qualify whenever the primitive carries the semi-transparency flag
+  // (command bit 25). A texel with STP forces blending even on an opaque
+  // command; untextured pixels never blend without bit 25.
+  const stp = texel !== null && (texel.stp || texel.c === 0);
+  const blends = prim.semiTrans ? texel === null || stp : stp;
+  if (!blends) {
     vram[idx] = r5 | (g5 << 5) | (b5 << 10);
     return;
   }
@@ -272,9 +315,10 @@ function putPixel(
   let or_: number, og: number, ob: number;
   switch (prim.blendMode) {
     case 0:
-      or_ = br + (r5 >> 1);
-      og = bg + (g5 >> 1);
-      ob = bb + (b5 >> 1);
+      // no$psx ABR 0: 0.5×B + 0.5×F (per-channel floor halves).
+      or_ = (br >> 1) + (r5 >> 1);
+      og = (bg >> 1) + (g5 >> 1);
+      ob = (bb >> 1) + (b5 >> 1);
       break;
     case 1:
       or_ = br + r5;
@@ -296,6 +340,63 @@ function putPixel(
   vram[idx] = cl(or_) | (cl(og) << 5) | (cl(ob) << 10);
 }
 
+/**
+ * Line DDA (GP0 40h-4Fh families). Both endpoints are drawn — lines include
+ * their lower-right coordinate (no$psx), so the Bresenham loop visits
+ * x<=maxX / y<=maxY with no exclusive-end adjustment. Attribute steps are
+ * exact integer 16.16 divisions of the axis length; for flat segments the
+ * DDA degenerates to the vertex-0 color. Segments longer than 1023×511
+ * texels are refused (no$psx Rendering Attributes size restriction).
+ */
+function drawLine(
+  vram: Uint16Array,
+  textureVram: Uint16Array,
+  stride: number,
+  scale: 1 | 2 | 4,
+  clip: ClipRect,
+  offset: DrawOffset,
+  prim: Prim,
+  v0: PrimVert,
+  v1: PrimVert,
+): void {
+  let A = decVert(v0);
+  let B = decVert(v1);
+  if (prim.colorMode === "flat") {
+    B.r = A.r; B.g = A.g; B.b = A.b;
+  }
+  A.x = (A.x + offset.x) * scale; A.y = (A.y + offset.y) * scale;
+  B.x = (B.x + offset.x) * scale; B.y = (B.y + offset.y) * scale;
+  const P = endPoint(A);
+  const Q = endPoint(B);
+  const dx = B.x - A.x;
+  const dy = B.y - A.y;
+  if (Math.abs(dx) > 1023 * scale || Math.abs(dy) > 511 * scale) return;
+  const steps = Math.max(Math.abs(dx), Math.abs(dy));
+  const den = steps > 0 ? steps * ONE : 0;
+  let x = A.x;
+  let y = A.y;
+  for (let i = 0; i <= steps; i++) {
+    if (x >= clip.x1 && x <= clip.x2 && y >= clip.y1 && y <= clip.y2) {
+      const num = i * ONE;
+      const lerp = (a: number, b: number): number =>
+        a + mulDiv(b - a, num, den);
+      const texel = prim.textured
+        ? sampleTexel(textureVram, prim, lerp(P.uf, Q.uf) >> 16, lerp(P.vf, Q.vf) >> 16)
+        : null;
+      putPixel(
+        vram, stride, prim, x, y, (x / scale) | 0, (y / scale) | 0,
+        lerp(P.rf, Q.rf) >> 16,
+        lerp(P.gf, Q.gf) >> 16,
+        lerp(P.bf, Q.bf) >> 16,
+        texel,
+      );
+    }
+    if (i === steps) break;
+    x = A.x + mulDiv(dx, i + 1, steps);
+    y = A.y + mulDiv(dy, i + 1, steps);
+  }
+}
+
 function drawTri(
   vram: Uint16Array,
   textureVram: Uint16Array,
@@ -307,6 +408,8 @@ function drawTri(
   v0: PrimVert,
   v1: PrimVert,
   v2: PrimVert,
+  /** Optional edge (native coords) whose ON-line pixels are skipped. */
+  skipEdge?: { ax: number; ay: number; bx: number; by: number },
 ): void {
   let A = decVert(v0);
   let B = decVert(v1);
@@ -315,6 +418,15 @@ function drawTri(
   A.x = (A.x + offset.x) * scale; A.y = (A.y + offset.y) * scale;
   B.x = (B.x + offset.x) * scale; B.y = (B.y + offset.y) * scale;
   C.x = (C.x + offset.x) * scale; C.y = (C.y + offset.y) * scale;
+  const edge = skipEdge === undefined ? undefined : (() => {
+    // Line equation terms at the scaled grid:
+    //   on-edge ⇔ (px − ax')·dy − (py − ay')·dx == 0
+    const dy = (skipEdge.by - skipEdge.ay) * scale;
+    const dx = (skipEdge.bx - skipEdge.ax) * scale;
+    const ax = (skipEdge.ax + offset.x) * scale;
+    const ay = (skipEdge.ay + offset.y) * scale;
+    return { ax, ay, dy, dx };
+  })();
   if (prim.colorMode === "flat") {
     // Flat: whole primitive uses vertex 0's color (PS1 flat3/flat4 family).
     B.r = A.r;
@@ -341,7 +453,9 @@ function drawTri(
     C = t;
   }
   const yStart = Math.max(A.y, clip.y1);
-  const yEnd = Math.min(C.y, clip.y2);
+  // Rectangles exclude the lower-right pixel (no$psx): drop the final
+  // scanline and rightmost column of the axis-aligned quad.
+  const yEnd = prim.exclusiveEnd ? Math.min(C.y - 1, clip.y2) : Math.min(C.y, clip.y2);
   for (let y = yStart; y <= yEnd; y++) {
     // Above B.y the active edges are A→B + A→C; below, B→C + A→C.
     const pts = (y < B.y ? edgePoints(A, B, y) : edgePoints(B, C, y)).concat(
@@ -356,9 +470,17 @@ function drawTri(
     }
     // Closed spans: left boundary ceil, right boundary floor (inclusive).
     const xL = Math.max(Math.ceil(L.xf / ONE), clip.x1);
-    const xR = Math.min(Math.floor(R.xf / ONE), clip.x2);
+    const xR = prim.exclusiveEnd
+      ? Math.min(Math.ceil(R.xf / ONE) - 1, clip.x2)
+      : Math.min(Math.floor(R.xf / ONE), clip.x2);
     const den = R.xf - L.xf;
     for (let x = xL; x <= xR; x++) {
+      // Shared-diagonal exclusion: pixels exactly ON the skipped edge were
+      // already drawn by the first triangle (hardware draws the quad
+      // diagonal once; double-draw would double-blend).
+      if (edge !== undefined && (x - edge.ax) * edge.dy - (y - edge.ay) * edge.dx === 0) {
+        continue;
+      }
       // Linear attribute interp across the span, 16.16 fixed point.
       const num = x * ONE - L.xf;
       const lerp = (l: number, r: number): number =>
@@ -420,17 +542,91 @@ function rasterizeInternal(
   if (prim.kind === "tri") {
     if (v.length < 3) return;
     tri(v[0]!, v[1]!, v[2]!);
-  } else {
-    // Quad: two triangles sharing the v1-v2 diagonal (PS1 decomposition).
+  } else if (prim.kind === "quad") {
+    // Quads arrive in either convention: perimeter order (v0..v3 around the
+    // shape — what polygon packets use) or diagonal order (v0=TL, v1=TR,
+    // v2=BL, v3=BR — the TMD convention). Detect by testing whether v0-v2
+    // and v1-v3 cross: for perimeter order those segments are the diagonals
+    // (they intersect); for diagonal order they are perimeter edges (they
+    // don't). Split across the real diagonal and skip its ON-line pixels in
+    // the second triangle — the first triangle's closed spans already drew
+    // them, and re-drawing would double-blend semi-transparency (hardware
+    // draws the diagonal once).
     if (v.length < 4) return;
+    const cross = (o: PrimVert, a: PrimVert, b: PrimVert): number =>
+      (a.x - o.x) * (b.y - o.y) - (a.y - o.y) * (b.x - o.x);
+    const segIntersect = (p1: PrimVert, p2: PrimVert, p3: PrimVert, p4: PrimVert): boolean => {
+      const d1 = cross(p3, p4, p1), d2 = cross(p3, p4, p2);
+      const d3 = cross(p1, p2, p3), d4 = cross(p1, p2, p4);
+      return ((d1 > 0) !== (d2 > 0) || d1 === 0 || d2 === 0)
+        && ((d3 > 0) !== (d4 > 0) || d3 === 0 || d4 === 0);
+    };
+    const perimeter = segIntersect(v[0]!, v[2]!, v[1]!, v[3]!);
     tri(v[0]!, v[1]!, v[2]!);
-    tri(v[1]!, v[2]!, v[3]!);
+    if (perimeter) {
+      drawTri(output, gpu.vram, stride, scale, clip, offset, prim,
+        v[0]!, v[2]!, v[3]!,
+        { ax: v[0]!.x | 0, ay: v[0]!.y | 0, bx: v[2]!.x | 0, by: v[2]!.y | 0 });
+    } else {
+      drawTri(output, gpu.vram, stride, scale, clip, offset, prim,
+        v[1]!, v[2]!, v[3]!,
+        { ax: v[1]!.x | 0, ay: v[1]!.y | 0, bx: v[2]!.x | 0, by: v[2]!.y | 0 });
+    }
+  } else if (prim.kind === "line") {
+    if (v.length < 2) return;
+    drawLine(output, gpu.vram, stride, scale, clip, offset, prim, v[0]!, v[1]!);
+  } else {
+    // Polyline (GP0 51h/5Ah): consecutive vertex pairs, endpoints included.
+    if (v.length < 2) return;
+    for (let i = 1; i < v.length; i++)
+      drawLine(output, gpu.vram, stride, scale, clip, offset, prim, v[i - 1]!, v[i]!);
   }
 }
 
 /** Rasterize one polygon primitive into native gpu.vram (15bpp BGR555). */
 export function rasterize(gpu: { vram: Uint16Array }, prim: Prim): void {
   rasterizeInternal(gpu, gpu.vram, 1, prim);
+}
+
+/**
+ * Depth Ordering Table buffer (no$psx "GPU Depth Ordering"). Packets are
+ * stored per 10-bit OTZ index (1MB consoles use 0..1023) and flushed
+ * front-to-back on flushOrderingTable: a game that clears the OT at
+ * DrawOTag and appends via AddPrim gets its 3D primitives drawn back-to-front
+ * like hardware DMA2-linked-list processing (same-index packets appear in
+ * insertion order: first-sent = drawn first = "behind").
+ */
+export class OrderingTable {
+  private readonly slots: Prim[][] = [];
+  /** Largest OTZ seen (list lengths stay O(used range), not 1024). */
+  private maxZ = -1;
+
+  add(z: number, prim: Prim): void {
+    const idx = z & 0x3ff;
+    let bucket = this.slots[idx];
+    if (bucket === undefined) {
+      bucket = [];
+      this.slots[idx] = bucket;
+    }
+    bucket.push(prim);
+    if (idx > this.maxZ) this.maxZ = idx;
+  }
+
+  /** Draw every stored primitive, highest OTZ (farthest) first. */
+  flush(gpu: { vram: Uint16Array }): void {
+    for (let z = this.maxZ; z >= 0; z--) {
+      const bucket = this.slots[z];
+      if (bucket === undefined) continue;
+      for (const prim of bucket) rasterize(gpu, prim);
+    }
+    this.clear();
+  }
+
+  /** Reset for the next frame's AddPrim pass (DrawOTag equivalent). */
+  clear(): void {
+    this.slots.length = 0;
+    this.maxZ = -1;
+  }
 }
 
 /**

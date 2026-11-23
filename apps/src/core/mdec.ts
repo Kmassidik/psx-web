@@ -498,6 +498,9 @@ export class Mdec {
       if (k > 63) break;
       const v = val10(rl);
       const val = qScale === 0 ? v * 2 : Math.trunc((v * qt[k]! * qScale + 4) / 8);
+      // q_scale=0 stores at the RAW zigzag index k (no zigzag remap) — the
+      // spec's "blk[k]=val" special mode, measured on hardware (pcsx-redux
+      // arm ZAC: k=2 decodes raster 2, not zscan[2]=5).
       blk[qScale === 0 ? k : ZIGZAG[k]!] = sat11(val);
     }
     // idctReal returns values in the shared 2^10 output domain.

@@ -17,7 +17,7 @@
  * NOTE: no$psx literals like 0180001h are 7 hex digits — 0x0018_0001.
  */
 import { describe, test, expect } from "bun:test";
-import { GTE } from "../src/core/gte";
+import { GTE, instructionCycles } from "../src/core/gte";
 
 /** Deterministic xorshift32 PRNG (seeded, reproducible). */
 function makeRng(seed: number): () => number {
@@ -747,5 +747,93 @@ describe("NCLIP (real opcode 06h)", () => {
     g2.sxy0 = 0; g2.sxy1 = 5 | (5 << 16); g2.sxy2 = 10 | (10 << 16);
     g2.execute(0x0000_0006);
     expect(g2.mac0).toBe(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 7. instructionCycles — no$psx "GTE Command Summary (sorted by Real Opcode bits)"
+// ---------------------------------------------------------------------------
+
+describe("instructionCycles", () => {
+  test("documented commands report their no$psx cycle counts", () => {
+    const cases: Array<[number, number]> = [
+      [0x01, 15], [0x06, 8], [0x0c, 6], [0x10, 8], [0x11, 8], [0x12, 8],
+      [0x13, 19], [0x14, 13], [0x16, 44], [0x1b, 17], [0x1c, 11],
+      [0x1e, 14], [0x20, 30], [0x28, 5], [0x29, 8], [0x2a, 17],
+      [0x2d, 5], [0x2e, 6], [0x30, 23], [0x3d, 5], [0x3e, 5], [0x3f, 39],
+    ];
+    for (const [op, clk] of cases) {
+      expect(instructionCycles(op)).toBe(clk);
+    }
+    // Real full opcodes: table keys on bits 0-5 only.
+    expect(instructionCycles(0x0018_0001)).toBe(15); // RTPS sf=1
+    expect(instructionCycles(0x0028_0030)).toBe(23); // RTPT sf=1
+  });
+
+  test("undocumented/N-A opcodes report 0", () => {
+    for (const op of [0x00, 0x02, 0x05, 0x0f, 0x15, 0x17, 0x1d, 0x1f, 0x21, 0x2f, 0x31, 0x3b, 0x3c]) {
+      expect(instructionCycles(op)).toBe(0);
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 8. IRGB / ORGB / SXYP register accessors (no$psx GTE Data Register Summary)
+// ---------------------------------------------------------------------------
+
+describe("IRGB / ORGB color conversion registers", () => {
+  test("IRGB write expands 5:5:5 to 16:16:16 into IR1..IR3 (x 80h)", () => {
+    const g = new GTE();
+    g.irgb = (0x1f << 10) | (0x0a << 5) | 0x15;
+    expect(g.ir1).toBe(0x15 * 0x80); // 2700h
+    expect(g.ir2).toBe(0x0a * 0x80);
+    expect(g.ir3).toBe(0x1f * 0x80); // 0F80h
+    expect(g.irgb).toBe((0x1f << 10) | (0x0a << 5) | 0x15);
+  });
+
+  test("IRGB read is the 5:5:5 mirror of IR1..IR3 (divide by 80h)", () => {
+    const g = new GTE();
+    g.ir1 = 0x0f80; g.ir2 = 0x0480; g.ir3 = 0x0000;
+    // Bits 0-4 red, 5-9 green, 10-14 blue (no$psx cop2r28 map).
+    expect(g.irgb).toBe(0x1f | (9 << 5) | (0 << 10));
+  });
+
+  test("ORGB collapses IR to 5:5:5; negatives saturate to 0, big positives to 1Fh", () => {
+    const g = new GTE();
+    g.ir1 = -0x1000; // negative → 00h, no FLAG activity
+    g.ir2 = 0x7fff; // ≥ 1000h → saturate 1Fh
+    g.ir3 = 0x0480; // 0480h/80h = 9
+    expect(g.orgb & 0x1f).toBe(0);
+    expect((g.orgb >>> 5) & 0x1f).toBe(0x1f);
+    expect((g.orgb >>> 10) & 0x1f).toBe(9);
+    expect(g.flag).toBe(0);
+    // Zero-flag edge: 8000h unsigned window is negative → 00h.
+    g.ir1 = 0x8000;
+    expect(g.orgb & 0x1f).toBe(0);
+  });
+});
+
+describe("SXYP move-on-write mirror", () => {
+  test("read mirrors SXY2; write shifts SXY2/SXY1 into SXY1/SXY0 then stores", () => {
+    const g = new GTE();
+    g.sxy0 = 1;
+    g.sxy1 = 2;
+    g.sxy2 = 3;
+    expect(g.sxyp).toBe(3); // mirror read
+    g.sxyp = 4;
+    expect(g.sxy0).toBe(2);
+    expect(g.sxy1).toBe(3);
+    expect(g.sxy2).toBe(4);
+    expect(g.sxyp).toBe(4);
+  });
+
+  test("plain SXY2 write does NOT move the FIFO (contrast with SXYP)", () => {
+    const g = new GTE();
+    g.sxy1 = 5;
+    g.sxy2 = 6;
+    g.sxy2 = 7;
+    expect(g.sxy0).toBe(0);
+    expect(g.sxy1).toBe(5);
+    expect(g.sxy2).toBe(7);
   });
 });

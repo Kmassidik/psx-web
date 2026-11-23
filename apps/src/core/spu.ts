@@ -198,10 +198,12 @@ export class Spu {
       }
       if (!spuOn || !unmuted) continue;
       const sample = voice.sample();
-      // Final voice volume: (ENVX * VOLX) >> 15 (psx-spx).
+      voice.sweepTick();
+      // Final voice volume: (ENVX * VOLX) >> 15 (psx-spx), with the sweep
+      // envelope carrying VOLX in sweep mode.
       const env = voice.env.level;
-      const vL = applyVolume(applyVolume(sample, env), directVolume(this.regs[voice.n * 8]!));
-      const vR = applyVolume(applyVolume(sample, env), directVolume(this.regs[1 + voice.n * 8]!));
+      const vL = applyVolume(applyVolume(sample, env), voice.sweepLevelL);
+      const vR = applyVolume(applyVolume(sample, env), voice.sweepLevelR);
       accL += vL;
       accR += vR;
       this.checkVoiceIrq(voice);

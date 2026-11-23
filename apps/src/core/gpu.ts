@@ -1,43 +1,32 @@
 import { HighResolutionRaster, rasterize, Prim, PrimVert } from "./gpu-raster";
 
 /**
- * GPU — Phase 1 stub: VRAM + the GP0 commands a PS-X EXE needs to show
- * pixels (FillVRAM 0x02, CPU→VRAM image load 0xA0/0xC0) + GP1 display config.
- * Full rasterizer (flat/gouraud/textured polygon families) lands in Phase 2.
- * VRAM: 1024×512 15bpp in one Uint16Array (preallocated; low-RAM rule).
+ * GPU — VRAM (1024×512 15bpp, one Uint16Array; low-RAM rule) + GP0 command
+ * decode (polygons 20h-3Fh, lines 40h-5Fh, rectangles 60h-7Fh, VRAM
+ * transfers, E0h-E6h environment) + GP1 display config and GPUSTAT.
+ * Pixel-level rasterization lives in gpu-raster.ts.
  */
 export const VRAM_W = 1024;
 export const VRAM_H = 512;
 export type GpuRenderScale = 1 | 2 | 4;
+/** Fields tests and tooling may poke directly without GP1 traffic. */
+export interface GpuFrameOverride {
+  x?: number; y?: number; width?: number; height?: number; rgba?: Uint8Array;
+}
 
 /** Active display rectangle and tightly packed RGBA8888 pixels. x/y are native VRAM coordinates. */
 export interface GpuDisplayFrame {
-  readonly x: number;
-  readonly y: number;
-  readonly width: number;
-  readonly height: number;
-  readonly enabled: boolean;
-  readonly interlaced: boolean;
-  readonly pal: boolean;
-  readonly colorDepth: 15 | 24;
-  readonly rgba: Uint8Array;
-  readonly scale: GpuRenderScale;
+  readonly x: number; readonly y: number; readonly width: number; readonly height: number;
+  readonly enabled: boolean; readonly interlaced: boolean; readonly pal: boolean;
+  readonly colorDepth: 15 | 24; readonly rgba: Uint8Array; readonly scale: GpuRenderScale;
   /** True only when scaled geometric sampling contributes to this 15-bit frame. */
   readonly enhancedGeometry: boolean;
 }
 
 interface MutableGpuDisplayFrame {
-  x: number;
-  y: number;
-  width: number;
-  height: number;
-  enabled: boolean;
-  interlaced: boolean;
-  pal: boolean;
-  colorDepth: 15 | 24;
-  rgba: Uint8Array;
-  scale: GpuRenderScale;
-  enhancedGeometry: boolean;
+  x: number; y: number; width: number; height: number;
+  enabled: boolean; interlaced: boolean; pal: boolean; colorDepth: 15 | 24;
+  rgba: Uint8Array; scale: GpuRenderScale; enhancedGeometry: boolean;
 }
 
 export class Gpu {
@@ -50,6 +39,10 @@ export class Gpu {
   // Keep the original power-on shape for composeFrame compatibility. GP1(00h)
   // below installs the hardware reset values before software configures video.
   private displayMode = 0x07;
+  /** Cached GP0(E1h).bit10 / GP0(E6h).bit0-1 for GPUSTAT. */
+  private dfe = false;
+  private maskSet = false;
+  private maskCheck = false;
   private oddField = false;
   private dmaDirection = 0;
   private horizontalStart = 0;
@@ -81,17 +74,17 @@ export class Gpu {
   private texWindow = 0;
   private imgX = 0; private imgY = 0; private imgW = 0; private imgH = 0;
   private imgCur = 0;
-  private fillX = 0; private fillY = 0; private fillW = 0; private fillH = 0;
   private fillColor = 0;
+  /** GP0 40h..5Fh lines: words accumulated, whether a line cmd is open. */
+  private lineWords: number[] = [];
+  private lineLeft = 0;
 
   /** GP0 write (port 0x1F801810). */
   writeGP0(w: number): void {
-    if (this.cmdLeft > 0) { this.gp0Param(w); return; }
+    // Polylines have no fixed word count: keep routing params while a line
+    // is open (lineWords non-empty) even though cmdLeft is 0.
+    if (this.cmdLeft > 0 || this.lineWords.length > 0) { this.gp0Param(w); return; }
     this.gp0Mode = (w >>> 24) & 0xff;
-    // Polygon opcode bits (no$psx): 24-27 opcode, 27 semi-trans, 28+29-30
-    // shape/vertex split... actual: bit27 semi, bit28 poly type, 29-30 verts,
-    // bit31 textured. Word counts: tri=3(+1 tex palette), quad=4(+1), plus
-    // 4/6 vertex words (textured adds texcache words per vertex).
     const top = this.gp0Mode;
     switch (top) {
       case 0x02: // Fill VRAM
@@ -100,8 +93,11 @@ export class Gpu {
         this.cmdWords = [w]; this.cmdLeft = 2; break;
       case 0xc0: // Store image
         this.cmdWords = [w]; this.cmdLeft = 2; break;
-      case 0xe1: this.texPage = w & 0xffff; break; // draw mode / texture page
-      case 0xe2: this.texWindow = w & 0xfffff; break; // texture window
+      case 0xe1:
+        this.texPage = w & 0x7ff;
+        this.dfe = (w & 0x400) !== 0;
+        break; // draw mode / texture page / dither / DFE
+      case 0xe2: this.texWindow = w & 0xfffff; break; // texture window (raw)
       case 0xe3:
         this.clipX1 = w & 0x3ff; this.clipY1 = (w >>> 10) & 0x1ff; break;
       case 0xe4:
@@ -110,9 +106,24 @@ export class Gpu {
         this.drawOffsetX = ((w & 0x7ff) << 21) >> 21;
         this.drawOffsetY = (((w >>> 11) & 0x7ff) << 21) >> 21;
         break;
+      case 0xe6:
+        this.maskSet = (w & 1) !== 0;
+        this.maskCheck = (w & 2) !== 0;
+        break;
       case 0x01: this.cmdWords = []; break; // clear cache: no-op
+      case 0x80: // Copy rectangle VRAM→VRAM: 3 params (no$psx)
+        this.cmdWords = [w]; this.cmdLeft = 3; break;
       default:
-        if ((top & 0xe0) === 0x60) {
+        if ((top & 0xe0) === 0x40) {
+          // Lines 40h..5Fh (no$psx): bit4 IIP gouraud, bit3 PLL polyline,
+          // bit1 ABE. Single lines: cmd + [color,pos]×(gouraud?2:1).
+          // Polylines: same rhythm, terminated by 0x50005000 (checked in
+          // gp0Param; no fixed word count).
+          const gouraud = (top & 0x10) !== 0;
+          const polyline = (top & 0x08) !== 0;
+          this.lineWords = [w];
+          this.cmdLeft = polyline ? 0 : gouraud ? 3 : 2;
+        } else if ((top & 0xe0) === 0x60) {
           const textured = (top & 0x04) !== 0;
           const variableSize = ((top >>> 3) & 3) === 0;
           const total = 2 + (textured ? 1 : 0) + (variableSize ? 1 : 0);
@@ -138,6 +149,18 @@ export class Gpu {
   }
 
   private gp0Param(w: number): void {
+    if ((this.gp0Mode & 0xe0) === 0x40) {
+      // Line parameters: fixed-length single lines finish via cmdLeft;
+      // polylines append until the 0x50005000 terminator (or a runaway
+      // safety cap — the GPU FIFO would stall long before 1M words).
+      this.lineWords.push(w);
+      if (this.cmdLeft > 0) {
+        if (--this.cmdLeft === 0) this.rasterizeLine(this.lineWords, false);
+      } else if ((w & 0xf000f000) === 0x50005000 || this.lineWords.length > 65536) {
+        this.rasterizeLine(this.lineWords, true);
+      }
+      return;
+    }
     if ((this.gp0Mode & 0xe0) === 0x60) {
       this.cmdWords.push(w);
       if (--this.cmdLeft === 0) this.rasterizeRect(this.cmdWords);
@@ -147,12 +170,17 @@ export class Gpu {
       case 0x02: {
         this.cmdWords.push(w);
         if (--this.cmdLeft === 0) {
-          const c = this.cmdWords[0]!;
-          const x = (this.cmdWords[1]! >>> 0) & 0x3ff, y = this.cmdWords[1]! >>> 16 & 0x1ff;
-          // no$psx FillVRAM: w = bits0-9, h = bits16-25; 0 means max (1024/512).
-          const wd = this.cmdWords[2]! & 0x3ff || 0x400;
-          const ht = (this.cmdWords[2]! >>> 16) & 0x1ff || 0x200;
-          this.fillColor = c & 0x7fff;
+          const c = this.cmdWords[0]! & 0x00ff_ffff; // color = bits 0-23; command byte already consumed
+          // no$psx FillVRAM masking: Xpos AND 3F0h (halfword steps of 10h),
+          // Ypos AND 1FFh.
+          const x = this.cmdWords[1]! & 0x3f0, y = (this.cmdWords[1]! >>> 16) & 0x1ff;
+          // Width = ((w AND 3FFh)+0Fh) AND (NOT 0Fh); Height = h AND 1FFh.
+          const wd = ((this.cmdWords[2]! & 0x3ff) + 0xf) & ~0xf;
+          const ht = (this.cmdWords[2]! >>> 16) & 0x1ff;
+          if (wd === 0 || ht === 0) break; // no$psx: fill does NOT occur for Xsiz/Ysiz=0
+          // no$psx: the fill color is 24bit RGB; the GPU converts it to the
+          // 15bit fill value with bit15=0 (R=bits0-7, G=8-15, B=16-23).
+          this.fillColor = ((c >>> 3) & 0x1f) | ((c >>> 6) & 0x3e0) | ((c >>> 9) & 0x7c00);
           this.fillRect(x, y, wd, ht);
         }
         break;
@@ -168,6 +196,11 @@ export class Gpu {
           this.pushImageWord(w);
           this.cmdLeft--;
         }
+        break;
+      }
+      case 0x80: {
+        this.cmdWords.push(w);
+        if (--this.cmdLeft === 0) this.copyRect();
         break;
       }
       case 0xc0: this.cmdWords.push(w); this.cmdLeft--; break;
@@ -229,6 +262,8 @@ export class Gpu {
       texWindow: this.texWindow,
       dither: (this.texPage & 0x200) !== 0,
       semiTrans: (top & 0x02) !== 0,
+      rawTex: (op & 0x0100_0000) !== 0, // command bit 24: raw texture
+      exclusiveEnd: true, // rects exclude the lower-right pixel (no$psx)
     });
   }
 
@@ -257,7 +292,7 @@ export class Gpu {
         if (i === 0) {
           this.clutBase = ((texWord >>> 16) & 0xffff) * 16;
         } else if (i === 1) {
-          this.texPage = (texWord >>> 16) & 0xffff;
+          this.texPage = (texWord >>> 16) & 0x7ff; // raw GP0(E1h)-shaped bits
         }
       }
       verts.push({
@@ -280,8 +315,60 @@ export class Gpu {
       texWindow: this.texWindow,
       dither: (this.texPage & 0x200) !== 0,
       semiTrans,
+      rawTex: (op & 0x0100_0000) !== 0, // command bit 24: raw texture
     });
     this.primWords = [];
+  }
+
+  /**
+   * Decode accumulated GP0 line words → Prim → rasterize into VRAM.
+   * Word rhythm matches polygons (no$psx): vertex 0's color rides in the
+   * command word; gouraud lines carry a color word BEFORE each subsequent
+   * vertex (V1, C2, V2, C3, V3...). Flat lines carry positions only.
+   */
+  private rasterizeLine(words: number[], polyline: boolean): void {
+    const op = words[0]!;
+    const top = (op >>> 24) & 0xff;
+    const gouraud = (top & 0x10) !== 0;
+    const semiTrans = (top & 0x02) !== 0;
+    const verts: PrimVert[] = [];
+    let i = 1;
+    let firstVert = true;
+    while (i < words.length) {
+      // Terminator ((word & 0xF000F000) === 0x50005000) ends the list and
+      // would otherwise be misread as a color or position word.
+      if (polyline && (words[i]! & 0xf000f000) === 0x50005000) break;
+      // Gouraud rhythm: vertex-0 color rides the command word; later
+      // vertices carry their color word BEFORE the position word (no$psx).
+      const colorWord = gouraud && !firstVert ? words[i++]! : words[0]!;
+      firstVert = false;
+      const posWord = words[i++]!;
+      verts.push({
+        x: (posWord & 0xffff) << 16 >> 16,
+        y: (posWord >>> 16) << 16 >> 16,
+        r: (colorWord >>> 0) & 0xff,
+        g: (colorWord >>> 8) & 0xff,
+        b: (colorWord >>> 16) & 0xff,
+        u: 0, v: 0,
+      });
+    }
+    if (verts.length >= 2) {
+      this.drawPrim({
+        kind: polyline ? "polyline" : "line",
+        vertices: verts,
+        colorMode: gouraud ? "gouraud" : "flat",
+        textured: false,
+        blendMode: ((this.texPage >>> 5) & 3) as 0 | 1 | 2 | 3,
+        texPage: this.texPage,
+        clutBase: this.clutBase,
+        texWindow: this.texWindow,
+        dither: (this.texPage & 0x200) !== 0,
+        semiTrans,
+        rawTex: false,
+      });
+    }
+    this.lineWords = [];
+    this.cmdLeft = 0;
   }
 
   private pushImageWord(w: number): void {
@@ -308,6 +395,25 @@ export class Gpu {
     }
   }
 
+  /** GP0(80h): VRAM→VRAM copy with per-no$psx parameter masking and wrap. */
+  private copyRect(): void {
+    // Masking for COPY commands (no$psx): Xpos AND 3FFh, Ypos AND 1FFh,
+    // Xsiz=((Xsiz-1) AND 3FFh)+1, Ysiz=((Ysiz-1) AND 1FFh)+1 (0 = max).
+    const srcX = this.cmdWords[1]! & 0x3ff, srcY = this.cmdWords[1]! >>> 16 & 0x1ff;
+    const dstX = this.cmdWords[2]! & 0x3ff, dstY = this.cmdWords[2]! >>> 16 & 0x1ff;
+    const wd = ((this.cmdWords[3]! - 1) & 0x3ff) + 1;
+    const ht = ((this.cmdWords[3]! >>> 16) - 1 & 0x1ff) + 1;
+    for (let yy = 0; yy < ht; yy++) {
+      const sy = (srcY + yy) & 511, dy = (dstY + yy) & 511;
+      const srcRow = sy * VRAM_W, dstRow = dy * VRAM_W;
+      for (let xx = 0; xx < wd; xx++) {
+        const sx = (srcX + xx) & 1023, dx = (dstX + xx) & 1023;
+        const p = this.vram[srcRow + sx]!;
+        this.vram[dstRow + dx] = p;
+        this.highResolution?.writeNativePixel(dx, dy, p);
+      }
+    }
+  }
   /** GP1 write (port 0x1F801814): display control. */
   writeGP1(w: number): void {
     switch ((w >>> 24) & 0xff) {
@@ -316,6 +422,7 @@ export class Gpu {
         this.cmdWords = [];
         this.primWords = [];
         this.cmdLeft = 0;
+        this.lineWords = [];
         this.texPage = 0;
         this.clutBase = 0;
         this.clipX1 = 0; this.clipY1 = 0; this.clipX2 = 1023; this.clipY2 = 511;
@@ -336,6 +443,7 @@ export class Gpu {
         this.cmdWords = [];
         this.primWords = [];
         this.cmdLeft = 0;
+        this.lineWords = [];
         break;
       case 0x03:
         this.dispEnable = (w & 1) === 0;
@@ -368,10 +476,18 @@ export class Gpu {
   }
 
   readGPUSTAT(): number {
+    // no$psx GP1 read layout. Display-mode fields mirror GP1(08h) bits;
+    // 480-line vertical resolution is reflected only while interlaced
+    // (VDS "when Bit5=1").
     const mode = this.displayMode;
     return ((this.oddField ? 0x8000_0000 : 0) | 0x1c00_0000
       | (this.dmaDirection << 29)
       | (this.dispEnable ? 0 : 0x0080_0000)
+      | (this.texPage & 0x3ff)
+      | (this.texPage & 0x200) // bit 9: dither enable (GP0(E1h).DTD)
+      | (this.dfe ? 0x400 : 0)
+      | (this.maskSet ? 0x800 : 0)
+      | (this.maskCheck ? 0x1000 : 0)
       | ((mode & 0x80) << 7)
       | ((mode & 0x40) << 10)
       | ((mode & 0x03) << 17)
@@ -492,6 +608,22 @@ export class Gpu {
     return out;
   }
 
+  /** Apply display-rectangle/pixel overrides (tests, save-state tooling). */
+  applyFrameOverride(o: GpuFrameOverride): void {
+    if (o.x !== undefined) this.display.x = o.x;
+    if (o.y !== undefined) this.display.y = o.y;
+    if (o.width !== undefined) this.display.width = o.width;
+    if (o.height !== undefined) this.display.height = o.height;
+    if (o.rgba !== undefined) {
+      if (this.display.rgba.length !== o.rgba.length) this.display.rgba = new Uint8Array(o.rgba.length);
+      this.display.rgba.set(o.rgba);
+    }
+    this.scaledDisplay.x = this.display.x;
+    this.scaledDisplay.y = this.display.y;
+    this.scaledDisplay.width = this.display.width;
+    this.scaledDisplay.height = this.display.height;
+  }
+
   /** Rebuild presentation pixels after state restore or direct native VRAM writes. */
   invalidateHighResolution(): void {
     this.highResolution?.invalidate();
@@ -535,8 +667,7 @@ export class Gpu {
         }
       } else {
         for (let x = 0; x < d.width; x++, o += 4) {
-          const sourceX = (d.x + x) & (VRAM_W - 1);
-          const p = this.vram[row + sourceX]!;
+          const p = this.vram[row + ((d.x + x) & (VRAM_W - 1))]!;
           const r5 = p & 31, g5 = (p >> 5) & 31, b5 = (p >> 10) & 31;
           s[o] = (r5 << 3) | (r5 >> 2);
           s[o + 1] = (g5 << 3) | (g5 >> 2);

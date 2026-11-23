@@ -14,7 +14,8 @@
  * All expected values hand-derived; no rasterizer code reused in tests.
  */
 import { describe, expect, test } from "bun:test";
-import { type Prim, type PrimVert, rasterize } from "../src/core/gpu-raster.ts";
+import { type Prim, type PrimVert, OrderingTable, rasterize } from "../src/core/gpu-raster.ts";
+import { Gpu } from "../src/core/gpu.ts";
 
 const VRAM_W = 1024;
 const VRAM_H = 512;
@@ -103,28 +104,31 @@ describe("golden vector coverage", () => {
     expect(getPx(gpu, 100, 100)).toBe(pack(0, 31, 0));
   });
 
-  test("quad = two triangles across the v1-v2 diagonal", () => {
+  test("quad diagonal blends exactly once (semi-transparent)", () => {
     const gpu = makeGpu();
     rasterize(
       gpu,
       flatPrim({
         kind: "quad",
-        vertices: [v(200, 200), v(203, 200), v(203, 203), v(200, 203)],
+        semiTrans: true,
+        blendMode: 0, // (B+F)/2 against black backdrop
+        vertices: [v(10, 10), v(110, 10), v(110, 110), v(10, 110)],
       }),
     );
-    // Interior 3×3 spans come from triangle (v0,v1,v2); the bottom row and
-    // right column come from (v1,v2,v3) sharing the v1-v2 diagonal.
-    for (let y = 200; y <= 202; y++)
-      for (let x = 201; x <= 203; x++) expect(getPx(gpu, x, y)).toBe(31);
-    expect(getPx(gpu, 200, 203)).toBe(31);
-    expect(getPx(gpu, 201, 203)).toBe(31);
-    expect(getPx(gpu, 202, 203)).toBe(31);
-    expect(getPx(gpu, 203, 203)).toBe(31);
-    // Untouched border.
-    expect(getPx(gpu, 199, 200)).toBe(0);
-    expect(getPx(gpu, 204, 203)).toBe(0);
-    expect(getPx(gpu, 200, 199)).toBe(0);
-    expect(getPx(gpu, 200, 204)).toBe(0);
+    // Every diagonal pixel (k,k) must show a SINGLE blend of red 248 over
+    // black: (0 + 15)/2 = 15. A double-blend would read 15+7 → 22.
+    for (let k = 10; k <= 110; k++)
+      expect(getPx(gpu, k, k)).toBe(pack(15, 0, 0));
+    // Full coverage: interior and both triangle halves painted.
+    expect(getPx(gpu, 20, 50)).toBe(pack(15, 0, 0));
+    expect(getPx(gpu, 50, 20)).toBe(pack(15, 0, 0));
+    expect(getPx(gpu, 105, 30)).toBe(pack(15, 0, 0));
+    expect(getPx(gpu, 30, 105)).toBe(pack(15, 0, 0));
+    // No writes outside the quad.
+    expect(getPx(gpu, 5, 60)).toBe(0);
+    expect(getPx(gpu, 115, 60)).toBe(0);
+    expect(getPx(gpu, 60, 5)).toBe(0);
+    expect(getPx(gpu, 60, 115)).toBe(0);
   });
 });
 
@@ -203,11 +207,9 @@ describe("gouraud interpolation", () => {
       }),
     );
     for (let y = 100; y <= 131; y++) {
-      // Hand-computed: the left column (x=300) sits exactly on the A→C left
-      // edge → t=0 → r stays 0 (31 at the bottom vertex row). The right
-      // column (x=301) interpolates along the top edge A→B: gradient 0→31
-      // across 32 scanlines → expected r5 = y - 100.
-      expect(getPx(gpu, 300, y)).toBe(y === 131 ? 31 : 0);
+      // Both bottom vertices are red (248), both top vertices black: the
+      // gradient runs 0→31 down BOTH columns across the 32 scanlines.
+      expect(getPx(gpu, 300, y)).toBe(y - 100);
       expect(getPx(gpu, 301, y)).toBe(y - 100);
     }
     expect(getPx(gpu, 302, 110)).toBe(0);
@@ -345,9 +347,11 @@ describe("textured primitives", () => {
     expect(getPx(gpu, 702, 301)).toBe(0);
   });
 
-  test("texel wrap modula VRAM size at edges (no OOB)", () => {
+  test("texel wrap stays inside the 256-texel page (no OOB)", () => {
+    // Page-relative wrap: u=1023/v=511 fold to (255,255) inside page (0,0),
+    // addressing vram[255*1024+255] — never page-absolute VRAM edges.
     const gpu = makeGpu();
-    gpu.vram[(511 * VRAM_W) + 1023] = 31;
+    gpu.vram[(255 * VRAM_W) + 255] = 31;
     expect(() =>
       rasterize(
         gpu,
@@ -363,6 +367,7 @@ describe("textured primitives", () => {
       ),
     ).not.toThrow();
     expect(getPx(gpu, 0, 0)).toBe(31); // texel 31 → unity-modulated r5=31
+    expect(gpu.vram[(511 * VRAM_W) + 1023]).toBe(0); // page wrap, not VRAM wrap
   });
 });
 
@@ -383,8 +388,8 @@ describe("blend modes", () => {
     return getPx(gpu, 400, 300) & 31;
   }
 
-  test("mode 0: 1.0B + 0.5F", () => {
-    expect(blendCase(0, 20, 10)).toBe(25); // 20 + (10>>1)
+  test("mode 0: (B + F) / 2", () => {
+    expect(blendCase(0, 20, 10)).toBe(15); // (20+10)/2
   });
   test("mode 1: 1.0B + 1.0F", () => {
     expect(blendCase(1, 20, 10)).toBe(30);
@@ -405,8 +410,8 @@ describe("blend modes", () => {
     const gpu = makeGpu();
     setPx(gpu, 400, 300, pack(20, 0, 0));
     gpu.vram[4096] = 10 | 0x8000; // CLUT[0]: red 10 + STP
-    // 15bpp texpage would ignore CLUT, so use 4bpp and point texel 0 at it.
-    // 4bpp texel (u=400,v=300) reads halfword at (300*1024 + (400>>2)) = 308000.
+    // texPage defaults to 0 = 4bpp CLUT mode; texel (u=400,v=300) reads
+    // halfword at (300*1024 + (400>>2)) = 308000.
     gpu.vram[300 * VRAM_W + (400 >> 2)] = 0; // texel index 0 → CLUT[0]
     rasterize(
       gpu,
@@ -425,25 +430,293 @@ describe("blend modes", () => {
     expect(getPx(gpu, 400, 300) & 31).toBe(30); // 20+10 blended despite semiTrans=false
   });
 
-  test("dither adds the 4×4 table before 5-bit truncation", () => {
+  test("dither adds the 4×4 table before 5-bit truncation (gouraud)", () => {
     const gpu = makeGpu();
-    // 8-bit color 40 = 5*8: without dither → 5; with table (+4/-3/…),
-    // pixel (0,0) gets 40-4=36 → 4, pixel (1,0) gets 40+0=40 → 5.
+    // Gouraud-shaded prim: DTD applies (no$psx: dither affects gouraud /
+    // modulated polygons). 8-bit color 40 = 5*8: without dither → 5; with
+    // table, pixel (0,0) gets 40-4=36 → 4, pixel (1,0) gets 40+0=40 → 5.
     rasterize(
       gpu,
       flatPrim({
+        colorMode: "gouraud",
         dither: true,
         vertices: [v(512, 256, 40, 0, 0), v(513, 256), v(512, 257)],
       }),
     );
+    // Pixel (513,256) sits ON the v0→v1 top edge → t=1 → full vertex-1
+    // color (248 → 31, dither -3 clamps nowhere); the table shows on the
+    // interior pixel (512,256): 40-4=36 → 4.
     expect(getPx(gpu, 512, 256)).toBe(4);
-    expect(getPx(gpu, 513, 256)).toBe(5);
+    expect(getPx(gpu, 513, 256)).toBe(31);
     // Same prim without dither truncates flat.
     const gpu2 = makeGpu();
     rasterize(
       gpu2,
-      flatPrim({ vertices: [v(512, 256, 40, 0, 0), v(513, 256), v(512, 257)] }),
+      flatPrim({
+        colorMode: "gouraud",
+        vertices: [v(512, 256, 40, 0, 0), v(513, 256), v(512, 257)],
+      }),
     );
     expect(getPx(gpu2, 512, 256)).toBe(5);
+  });
+
+  test("flat monochrome polygons ignore dither (no$psx DTD scope)", () => {
+    const gpu = makeGpu();
+    rasterize(
+      gpu,
+      flatPrim({
+        dither: true, // flat mono: DTD must NOT apply
+        vertices: [v(512, 256, 40, 0, 0), v(513, 256), v(512, 257)],
+      }),
+    );
+    expect(getPx(gpu, 512, 256)).toBe(5); // plain >>3, no table entry
+    expect(getPx(gpu, 513, 256)).toBe(5); // flat color everywhere (v0 copied)
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 6. Texture page / CLUT addressing for all three tex modes.
+describe("texture page and CLUT addressing", () => {
+  test("4bpp: texPage X base shifts the fetch into the second page column", () => {
+    const gpu = makeGpu();
+    // texPage TBX=1 → halfword base x=64. Texel u=0..7 reads vram[v*1024+64+u>>2].
+    for (let row = 0; row < 2; row++)
+      gpu.vram[row * VRAM_W + 64] = 0x0001; // texel 0 = idx 1, texels 1-3 = 0
+    const clutBase = 90 * VRAM_W;
+    gpu.vram[clutBase] = 100; // CLUT[0]
+    gpu.vram[clutBase + 1] = 200; // CLUT[1]
+    rasterize(
+      gpu,
+      flatPrim({
+        textured: true,
+        texPage: 1, // TBX=1, TBY=0, 4bpp
+        clutBase,
+        vertices: [
+          v(300, 100, 128, 128, 128, 0, 0),
+          v(301, 100, 128, 128, 128, 1, 0),
+          v(300, 101, 128, 128, 128, 0, 1),
+        ],
+      }),
+    );
+    // texel (0,0) → CLUT[1] = 200; texel (1,0) → CLUT[0] = 100 (bit-packed order).
+    expect(getPx(gpu, 300, 100)).toBe(200);
+    expect(getPx(gpu, 300, 101)).toBe(200);
+  });
+
+  test("8bpp: CLUT index comes from the correct byte of the page halfword", () => {
+    const gpu = makeGpu();
+    // texPage TBX=2 → halfword base 128. u=4 → halfword 128+2; low byte texel.
+    gpu.vram[128 + 2] = 0x0f00; // u=4 → idx 0, u=5 → idx 15
+    const clutBase = 80 * VRAM_W;
+    gpu.vram[clutBase] = 50;
+    gpu.vram[clutBase + 15] = 60;
+    rasterize(
+      gpu,
+      flatPrim({
+        textured: true,
+        texPage: 2 | (1 << 7), // TBX=2, 8bpp
+        clutBase,
+        vertices: [
+          v(400, 200, 128, 128, 128, 4, 0),
+          v(406, 200, 128, 128, 128, 10, 0),
+          v(400, 201, 128, 128, 128, 4, 1),
+        ],
+      }),
+    );
+    // x=400 hits u=4 → low byte of halfword 128+2 → CLUT[0]; x=401 hits
+    // u=5 → HIGH byte → CLUT[15] (top-edge u advances +1 per pixel).
+    expect(getPx(gpu, 400, 200)).toBe(50);
+    expect(getPx(gpu, 400, 201)).toBe(50);
+    expect(getPx(gpu, 401, 200)).toBe(60);
+  });
+
+  test("15bpp: TBY=1 fetches the lower VRAM half (page y=256)", () => {
+    const gpu = makeGpu();
+    // texPage 0x90 = TBY(bit4)=1, TPF=2 (15bpp): fetches (256+v)*1024 + u.
+    gpu.vram[(256 + 5) * VRAM_W + 3] = 31; // page (0,256) texel (3,5)
+    rasterize(
+      gpu,
+      flatPrim({
+        textured: true,
+        texPage: (1 << 4) | (2 << 7),
+        vertices: [
+          v(500, 300, 128, 128, 128, 3, 5),
+          v(501, 300, 128, 128, 128, 4, 5),
+          v(500, 301, 128, 128, 128, 3, 6),
+        ],
+      }),
+    );
+    expect(getPx(gpu, 500, 300)).toBe(31); // unity-modulated r5=31
+    expect(getPx(gpu, 501, 300)).toBe(0); // texel (4,5) unset
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 7. Texture window (GP0 E2h): Mask/Offset in 8-texel steps.
+describe("texture window", () => {
+  test("8×8 window tiles across the page: u=9 folds back to u=1", () => {
+    const gpu = makeGpu();
+    // 15bpp page (0,0); window mask=1 (8-texel window), offset=0.
+    gpu.vram[1] = 10; // texel (1,0) dim red
+    gpu.vram[9] = 20; // texel (9,0) — must NOT be hit after folding
+    rasterize(
+      gpu,
+      flatPrim({
+        textured: true,
+        texPage: 2 << 7,
+        texWindow: (1 << 0), // maskX=1 (8px), offsetX=0, maskY=31, offsetY=0? keep v raw
+        vertices: [
+          v(600, 100, 128, 128, 128, 9, 0),
+          v(601, 100, 128, 128, 128, 10, 0),
+          v(600, 101, 128, 128, 128, 9, 1),
+        ],
+      }),
+    );
+    // u=9: (9 & ~8) | 0 = 1 → texel 1 → r5=10
+    expect(getPx(gpu, 600, 100)).toBe(10);
+    // u=10: (10 & ~8) | 0 = 2 → texel 2 (zero)
+    expect(getPx(gpu, 600, 101)).toBe(0);
+  });
+
+  test("window offset re-bases the tiled window inside the page", () => {
+    const gpu = makeGpu();
+    // maskX=1, offsetX=1: u=2 → (2 & ~8) | 8 = 10 → texel 10.
+    gpu.vram[10] = 5;
+    rasterize(
+      gpu,
+      flatPrim({
+        textured: true,
+        texPage: 2 << 7,
+        texWindow: (1 << 0) | (1 << 10), // maskX=1, offsetX=1 (×8 = texel 8)
+        vertices: [
+          v(610, 100, 128, 128, 128, 2, 0),
+          v(611, 100, 128, 128, 128, 3, 0),
+          v(610, 101, 128, 128, 128, 2, 1),
+        ],
+      }),
+    );
+    expect(getPx(gpu, 610, 100)).toBe(5);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 8. Line primitives (GP0 40h-4Fh families via Gpu.decode).
+describe("line primitives", () => {
+  const lineGpu = (): Gpu => new Gpu();
+  const gp0 = (g: Gpu, w: number): void =>
+    g.writeGP0(w >>> 0);
+
+  test("flat line 40h draws both endpoints inclusive", () => {
+    const g = lineGpu();
+    gp0(g, (0x40 << 24) | 0x00f80000); // flat line (no ABE), blue 248
+    gp0(g, (10 | (10 << 16)) >>> 0);
+    gp0(g, (60 | (10 << 16)) >>> 0);
+    for (let x = 10; x <= 60; x++) expect(g.vram[10 * 1024 + x]).toBe(0x7c00);
+    expect(g.vram[9 * 1024 + 10]).toBe(0); // rows above/below untouched
+    expect(g.vram[11 * 1024 + 10]).toBe(0);
+    expect(g.vram[10 * 1024 + 61]).toBe(0);
+  });
+
+  test("flat line 42h (ABE) blends against the backdrop", () => {
+    const g = lineGpu();
+    g.vram[300 * 1024 + 500] = pack(20, 0, 0);
+    gp0(g, (0x42 << 24) | 0x00000050); // bit1 = ABE; ABR=0 (B/2+F/2); red 80
+    gp0(g, (500 | (300 << 16)) >>> 0);
+    gp0(g, (520 | (300 << 16)) >>> 0);
+    expect(g.vram[300 * 1024 + 500]! & 31).toBe(15); // (20+10)/2, ABR 0
+  });
+
+  test("gouraud line 50h consumes V1,C2,V2 and interpolates", () => {
+    const g = lineGpu();
+    gp0(g, 0x50000000); // gouraud line (IIP), v0 color black (rides in cmd)
+    gp0(g, (100 | (100 << 16)) >>> 0);
+    gp0(g, 0x000000f8); // v1 color: red 248 (R bits 0-7), precedes vertex 1
+    gp0(g, (131 | (100 << 16)) >>> 0);
+    expect(g.vram[100 * 1024 + 100]! & 31).toBe(0); // start black
+    expect(g.vram[100 * 1024 + 131]! & 31).toBe(31); // end red
+    const mid = g.vram[100 * 1024 + 115]! & 31; // ~half intensity
+    expect(mid).toBeGreaterThan(10);
+    expect(mid).toBeLessThan(22);
+  });
+
+  test("polyline 48h runs until the 0x50005000 terminator", () => {
+    const g = lineGpu();
+    gp0(g, (0x48 << 24) | 0x0000f800); // flat polyline (PLL), green 248
+    gp0(g, (200 | (200 << 16)) >>> 0); // v0
+    gp0(g, (210 | (200 << 16)) >>> 0); // v1
+    gp0(g, (210 | (210 << 16)) >>> 0); // v2
+    gp0(g, 0x50005000); // terminator
+    for (let x = 200; x <= 210; x++) expect(g.vram[200 * 1024 + x]).toBe(pack(0, 31, 0));
+    for (let y = 200; y <= 210; y++) expect(g.vram[y * 1024 + 210]).toBe(pack(0, 31, 0));
+    expect(g.vram[210 * 1024 + 200]).toBe(0); // diagonal closed by segments only
+    // The terminator must not start a new line (no writes below-right).
+    expect(g.vram[220 * 1024 + 220]).toBe(0);
+  });
+
+  test("oversized segments (>1023×511 texels) are refused per no$psx", () => {
+    const g = lineGpu();
+    gp0(g, (0x40 << 24) | 0x00f80000);
+    gp0(g, ((-300 & 0xffff) | (((-300) & 0xffff) << 16)) >>> 0);
+    gp0(g, (300 | (300 << 16)) >>> 0); // 600 texels tall → refused
+    expect(g.vram.every((p: number) => p === 0)).toBe(true);
+    // Legal 500-texel segment still draws.
+    const g2 = lineGpu();
+    gp0(g2, (0x40 << 24) | 0x00f80000);
+    gp0(g2, (0 | (0 << 16)) >>> 0);
+    gp0(g2, (0 | (500 << 16)) >>> 0);
+    expect(g2.vram[250 * 1024]).toBe(0x7c00);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 9. Ordering table: draw order proven by overlapping opaque primitives.
+describe("OrderingTable draw order", () => {
+  test("flush paints far (high OTZ) first so near (low OTZ) wins overlaps", () => {
+    const gpu = makeGpu();
+    const ot = new OrderingTable();
+    const sq = (x: number, y: number, r8: number): Prim =>
+      flatPrim({
+        kind: "quad",
+        vertices: [v(x, y, r8), v(x + 30, y, r8), v(x + 30, y + 30, r8), v(x, y + 30, r8)],
+      });
+    ot.add(100, sq(100, 100, 248)); // NEAR (low OTZ), red — drawn LAST
+    ot.add(900, sq(110, 110, 0)); // FAR — drawn FIRST (black overwrite)
+    ot.flush(gpu);
+    // Center overlap must show the LOW-OTZ (near) primitive color: red.
+    expect(getPx(gpu, 120, 120)).toBe(pack(31, 0, 0));
+    // (105,105) is inside the NEAR quad only — its red must survive the
+    // earlier far pass.
+    expect(getPx(gpu, 105, 105)).toBe(pack(31, 0, 0));
+  });
+
+  test("same-OTZ insertion order: first added is drawn first (behind)", () => {
+    const gpu = makeGpu();
+    const ot = new OrderingTable();
+    const sq = (x: number, y: number, g8: number): Prim =>
+      flatPrim({
+        kind: "quad",
+        vertices: [v(x, y, 0, g8), v(x + 20, y, 0, g8), v(x + 20, y + 20, 0, g8), v(x, y + 20, 0, g8)],
+      });
+    ot.add(500, sq(200, 200, 0)); // first → behind
+    ot.add(500, sq(205, 205, 248)); // second → in front on equal OTZ
+    ot.flush(gpu);
+    expect(getPx(gpu, 210, 210)).toBe(pack(0, 31, 0)); // later packet wins
+    expect(getPx(gpu, 202, 202)).toBe(0); // earlier packet region untouched
+  });
+
+  test("flush clears the table (DrawOTag per frame)", () => {
+    const gpu = makeGpu();
+    const ot = new OrderingTable();
+    ot.add(10, flatPrim({ vertices: [v(0, 0), v(5, 0), v(0, 5)] }));
+    ot.flush(gpu);
+    expect(getPx(gpu, 2, 2)).toBe(pack(31, 0, 0)); // first flush painted here
+    ot.add(20, flatPrim({ vertices: [v(900, 0), v(905, 0), v(900, 5)] }));
+    ot.flush(gpu);
+    // First frame's prim must NOT be repainted: zero out and re-flush an
+    // empty table — nothing redraws, proving clear() emptied the buckets.
+    gpu.vram[2 * VRAM_W + 2] = 0;
+    ot.flush(gpu);
+    expect(getPx(gpu, 2, 2)).toBe(0);
+    expect(getPx(gpu, 902, 2)).toBe(pack(31, 0, 0)); // second frame prim intact
   });
 });

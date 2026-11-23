@@ -131,8 +131,8 @@ describe("emulator worker protocol", () => {
 
   test("MDF boot runs FE before GAME and retains one shared sector source", () => {
     const { posted, runtime } = fixture();
-    const frontend = buildHelloExe(0x001f).bytes;
-    const game = buildHelloExe(0x03e0).bytes;
+    const frontend = buildHelloExe(0x00_00_ff).bytes;
+    const game = buildHelloExe(0x00_ff_00).bytes;
     const image = commercialMdf(frontend, game);
     runtime.handle({ type: "boot", id: 1, name: "game.mdf", mode: "auto", buffer: image });
     expect(result(posted)).toMatchObject({ kind: "boot", source: "mdf", lifecycle: "running" });

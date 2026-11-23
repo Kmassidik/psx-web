@@ -30,6 +30,8 @@ export class BiosKernel {
   private readonly interruptHandlers: InterruptHandler[] = [];
   private readonly pendingCallbacks: number[] = [];
   private padDest = 0;
+  /** Event descriptor the guest registered for card-liveness checks (B_InitCARD). */
+  private padCardEvent = 0;
   private customExit = 0;
   private returnFromException = false;
   private sectorProvider?: SectorProvider;
@@ -124,8 +126,13 @@ export class BiosKernel {
   updatePads(): number {
     const buttons = ((this.pads.pad2 << 16) | this.pads.pad1) | 0;
     if (this.padDest !== 0) this.cpu.mem.store32(this.padDest, buttons);
+    // PadCard setup: the BIOS card-liveness event is level-delivered on every
+    // frame while a slot holds a card (real BIOS: card detection task per
+    // frame). Callers that wait on it make progress without card I/O.
+    if (this.padCardEvent !== 0) this.deliver(0xf000_0011, 0x20);
     return buttons;
   }
+
 
   deliver(eventClass: number, spec: number): void {
     eventClass |= 0;
@@ -239,6 +246,11 @@ export class BiosKernel {
       }
       case 0x32: // FileOpen — full filesystem delivery is not implemented
         return 0xdead_0001;
+      case 0x35: { // write(fd, buf, count): host console output is discarded
+        const fd = this.cpu.r[4]!;
+        const count = this.cpu.r[6]!;
+        return fd === 1 || fd === 2 ? count : -1;
+      }
       case 0x72: // _96_remove
         return 0;
       default:
@@ -351,10 +363,30 @@ export class BiosKernel {
       }
       case 0x32: // FileOpen — full filesystem delivery is not implemented
         return 0xdead_0001;
-      case 0x35: { // write(fd, buf, count): host console output is discarded
+      case 0x35: { // write(fd, buf, count) — no$psx: A(03h) or B(35h) FileWrite
         const fd = this.cpu.r[4]!;
         const count = this.cpu.r[6]!;
         return fd === 1 || fd === 2 ? count : -1;
+      }
+      case 0x4a: { // InitCARD(pad_enable, card_slot_interrupt_enable)
+        // Init the card service; complete once the BIOS card-liveness event
+        // (class F0000011h spec 20h, mode 2000h) has fired. A card is always
+        // present in this emulation, so the level event is delivered every
+        // frame (updatePads) and the wait completes without card I/O.
+        if (this.padCardEvent === 0) {
+          this.padCardEvent = this.bCall(0x08); // OpenEvent(F0000011,20,2000,0)
+          if (this.padCardEvent !== 0) this.bCall(0x0c); // EnableEvent
+          this.updatePads(); // deliver the level card event immediately
+        }
+        // Drain one TestEvent on the descriptor: true once the event fired.
+        if (this.padCardEvent !== 0) {
+          const event = this.events.find((candidate) => candidate.handle === this.padCardEvent);
+          if (event?.enabled && event.ready && event.mode === 0x2000) {
+            event.ready = false;
+            return 1;
+          }
+        }
+        return 0;
       }
       case 0x5b: { // ChangeClearPad(clear)
         if (handle === 0) this.cpu.ports.write32(0x1f80_1070, ~(1 << 7), 32);

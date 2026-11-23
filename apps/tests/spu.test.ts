@@ -2,6 +2,7 @@ import { describe, test, expect } from "bun:test";
 import { Spu, SPU_RAM_SIZE } from "../src/core/spu";
 import {
   SpuVoice, Adsr, decodeAdpcmBlock, gaussInterpolate, GAUSS, directVolume,
+  sweepStep, sweepParams,
 } from "../src/core/spu-voice";
 
 /** u16 register offsets (from 0x1F801C00) inside a voice's 8-register block. */
@@ -466,5 +467,106 @@ describe("SPU direct volume scaling", () => {
     expect(spu.ram[0]).toBe(0);
     expect(spu.read(0x01ae) & 0x8000).toBe(0);
     expect(SPU_RAM_SIZE).toBe(0x80000);
+  });
+});
+
+describe("SPU sweep volume envelopes", () => {
+  test("linear sweep decrease from 0x4000 reaches 0 with exact step sequence", () => {
+    // reg 0x8000|0x2000|0x2c = decrease, linear, shift 11, step 4:
+    // step = ~7 = -8 << 0 = -8 per update, counter 8000h (every sample).
+    const st = { counter: 0 };
+    const p = sweepParams(0x8000 | 0x2000 | (11 << 2) | 0);
+    expect(p).toEqual({ rate: 11 << 2, decreasing: true, exponential: false, phaseNegative: false });
+    let level = 0x4000;
+    const seq: number[] = [];
+    let active = true;
+    while (active && seq.length < 2048) {
+      const r = sweepStep(level, p, st);
+      level = r.level;
+      active = r.active;
+      seq.push(level);
+    }
+    expect(seq[0]).toBe(0x4000 - 8);
+    expect(seq[1]).toBe(0x4000 - 16);
+    expect(seq[seq.length - 1]).toBe(0);
+    expect(active).toBe(false);
+    expect(seq.length).toBe(0x4000 / 8); // exact number of updates
+  });
+
+  test("exponential decrease scales the step by level (slower near zero)", () => {
+    const st = { counter: 0 };
+    const p = sweepParams(0x8000 | 0x4000 | 0x2000 | (11 << 2) | 0);
+    let level = 0x4000;
+    const r1 = sweepStep(level, p, st);
+    expect(r1.level).toBe(level + ((-8 * level) >> 15)); // ≈ -1 at 0x4000
+    // Compare with linear at the same level: -8.
+    const lin = sweepParams(0x8000 | 0x2000 | (11 << 2) | 0);
+    expect(sweepStep(0x4000, lin, { counter: 0 }).level).toBe(0x4000 - 8);
+  });
+
+  test("linear increase saturates at 0x7fff and deactivates", () => {
+    const st = { counter: 0 };
+    const p = sweepParams(0x8000 | (11 << 2) | 0); // increase, linear, -8.. wait: +7
+    let level = 0x7ff8;
+    const r = sweepStep(level, p, st);
+    expect(r.level).toBe(0x7fff);
+    expect(r.active).toBe(false);
+  });
+
+  test("rate all-ones (7Fh) never steps, never saturates", () => {
+    const st = { counter: 0 };
+    const p = sweepParams(0x8000 | 0x7f);
+    const r = sweepStep(0x1234, p, st);
+    expect(r.level).toBe(0x1234);
+    expect(r.active).toBe(true);
+    expect(st.counter).toBe(0);
+  });
+
+  test("slow rate (shift > 11) waits 2^(shift-11) samples between steps", () => {
+    // shift 15: increment 8000h >> 4 = 800h → step every 16 samples.
+    const st = { counter: 0 };
+    const p = sweepParams(0x8000 | 0x2000 | (15 << 2) | 0);
+    let stepped = 0;
+    let level = 0x4000;
+    for (let i = 0; i < 16; i++) {
+      const r = sweepStep(level, p, st);
+      if (r.level !== level) stepped++;
+      level = r.level;
+    }
+    expect(stepped).toBe(1);
+    expect(level).toBe(0x4000 - 8);
+  });
+
+  test("voice in sweep mode: VOLL sweep fades mixed output from loud to silence", () => {
+    const spu = new Spu();
+    // Loud zigzag loop (same encoding as the mixing tests: nibbles 7, shift 3).
+    spu.ram[0] = 0x03; // shift 3, filter 0
+    spu.ram[1] = 0x07; // end+repeat+start: loop onto itself
+    for (let i = 2; i < 16; i++) spu.ram[i] = 0x77;
+    const voice = spu.voices[0]!;
+    spu.regs[V_SSA] = 0;
+    spu.regs[V_PITCH] = 0x1000;
+    spu.regs[V_ADSR1] = 0x000f; // fast attack to max
+    spu.regs[V_ADSR2] = 0xf000; // sustain holds
+    // VOLL: sweep-mode decrease, shift 11 step 0 → -8 per sample: reaches 0
+    // after 2048 samples. VOLR stays direct max.
+    spu.regs[V_VOLL] = 0x8000 | 0x2000 | (11 << 2) | 0;
+    spu.regs[1 + V_VOLL] = 0x3fff; // VOLR direct max
+    spu.regs[0x0180] = 0x3fff;
+    spu.regs[0x0182] = 0x3fff;
+    spu.write(0x01aa, 0xc000); // ATTR: SPU enable + unmute
+    spu.keyOn(1);
+    const earlyL = new Float32Array(50);
+    const earlyR = new Float32Array(50);
+    spu.mix(earlyL, earlyR);
+    expect(Math.max(...Array.from(earlyL).map(Math.abs))).toBeGreaterThan(0.01);
+    // 2600 samples > 2048: the left sweep has landed on zero.
+    const lateL = new Float32Array(100);
+    const lateR = new Float32Array(100);
+    for (let i = 0; i < 26; i++) spu.tick(768 * 100);
+    spu.mix(lateL, lateR);
+    expect(Math.max(...Array.from(lateL).map(Math.abs))).toBe(0);
+    expect(Math.max(...Array.from(lateR).map(Math.abs))).toBeGreaterThan(0.01);
+    expect(voice.sweepLevelL).toBe(0);
   });
 });

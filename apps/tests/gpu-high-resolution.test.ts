@@ -192,11 +192,14 @@ describe("scaled raster semantics", () => {
     const surface = new HighResolutionRaster(native.vram, scale);
     const prim = primitive({
       vertices: [vertex(2, 2, 120), vertex(2, 2, 120), vertex(2, 2, 120)],
+      colorMode: "gouraud",
       semiTrans: true, blendMode: 1, dither: true,
     });
     surface.rasterize(native, prim);
     rasterize(native, prim);
     // DITHER[2][2] = -4: 120-4 -> 14 five-bit, then B+F = 4+14 = 18.
+    // Gouraud shading is required for dithering: no$psx applies DTD to
+    // gouraud/modulated primitives and lines only (flat mono polys strip LSBs).
     const expected = pack(18, 4, 4);
     expect(native.vram[2 * 1024 + 2]).toBe(expected);
     const stride = 1024 * scale;

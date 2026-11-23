@@ -6,7 +6,7 @@ import type { SpuAudioSink } from "../src/core/spu-audio";
 
 describe("Phase-1 boot: hello EXE end-to-end (loader → CPU → bus → GPU)", () => {
   test("EXE boots, fills VRAM green via GP0, spins in loop", () => {
-    const { bytes } = buildHelloExe(0x03e0); // BGR555 green
+    const { bytes } = buildHelloExe(0x00_ff_00); // RGB24 green → VRAM 0x03E0
     const exe = parsePsExe(bytes);
     const m = new Machine();
     m.loadExe(bytes, exe.pc0, exe.t_addr, exe.data);
@@ -21,7 +21,7 @@ describe("Phase-1 boot: hello EXE end-to-end (loader → CPU → bus → GPU)", 
     // VRAM row 0: green 0x03E0 across the fill area
     expect(m.gpu.vram[0]).toBe(0x03e0);
     expect(m.gpu.vram[1023]).toBe(0x03e0);
-    expect(m.gpu.vram[512 * 1024 - 1]).toBe(0x03e0);
+    expect(m.gpu.vram[510 * 1024 + 1023]).toBe(0x03e0); // h=511 → rows 0..510
     // compose produces opaque green pixels in the RGBA output
     m.gpu.composeFrame();
     expect(m.gpu.screen[0]).toBe(0); // R
@@ -30,7 +30,7 @@ describe("Phase-1 boot: hello EXE end-to-end (loader → CPU → bus → GPU)", 
   });
 
   test("different color: red fill (0x001F)", () => {
-    const { bytes } = buildHelloExe(0x001f);
+    const { bytes } = buildHelloExe(0x00_00_ff);
     const exe = parsePsExe(bytes);
     const m = new Machine();
     m.loadExe(bytes, exe.pc0, exe.t_addr, exe.data);
@@ -43,7 +43,7 @@ describe("Phase-1 boot: hello EXE end-to-end (loader → CPU → bus → GPU)", 
 
   test("determinism: two boots produce identical VRAM hash", () => {
     const boot = () => {
-      const { bytes } = buildHelloExe(0x7c1f);
+      const { bytes } = buildHelloExe(0xff_84_7c);
       const exe = parsePsExe(bytes);
       const m = new Machine();
       m.loadExe(bytes, exe.pc0, exe.t_addr, exe.data);
@@ -75,7 +75,7 @@ describe("GP0 image upload", () => {
     m.gpu.writeGP0(0x7fff_0000);
     expect(m.gpu.vram[0]).toBe(0);
     expect(m.gpu.vram[1]).toBe(0x7fff);
-    m.gpu.writeGP0(0x0200_001f);
+    m.gpu.writeGP0(0x0200_00ff); // RGB24 R=255 → BGR555 0x001F
     m.gpu.writeGP0(2);
     m.gpu.writeGP0((1 << 16) | 1);
     expect(m.gpu.vram[2]).toBe(0x001f);
@@ -88,10 +88,12 @@ describe("GP0 rectangles", () => {
     m.gpu.writeGP0(0x6000_00ff);
     m.gpu.writeGP0(2);
     m.gpu.writeGP0((2 << 16) | 2);
+    // PS1 rects exclude the lower-right pixel (no$psx): 2x2 at (2,0) covers
+    // (2,0),(3,0),(2,1) but not (3,1).
     expect(m.gpu.vram[2]).toBe(0x001f);
     expect(m.gpu.vram[3]).toBe(0x001f);
     expect(m.gpu.vram[1024 + 2]).toBe(0x001f);
-    expect(m.gpu.vram[1024 + 3]).toBe(0x001f);
+    expect(m.gpu.vram[1024 + 3]).toBe(0);
   });
 });
 
@@ -367,7 +369,7 @@ describe("Hardware interrupt delivery", () => {
 
 describe("Machine snapshot → restore equivalence (zsave/zload spec)", () => {
   test("snapshot → restore → continue == uninterrupted run", () => {
-    const { bytes } = buildHelloExe(0x7c1f);
+    const { bytes } = buildHelloExe(0xff_84_7c);
     const exe = parsePsExe(bytes);
     const a = new Machine();
     a.loadExe(bytes, exe.pc0, exe.t_addr, exe.data);

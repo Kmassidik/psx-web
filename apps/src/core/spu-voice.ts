@@ -8,6 +8,16 @@
  */
 export type AdsrPhase = "attack" | "decay" | "sustain" | "release";
 
+/** Sweep envelope state (psx-spx "Sweep Volume Mode"): bit15=1 volume registers. */
+export interface SweepParams {
+  /** rate bits 0-6 of the register (shift<<2 | step). */
+  rate: number;
+  decreasing: boolean;
+  exponential: boolean;
+  /** bit12 of the register: phase negative. */
+  phaseNegative: boolean;
+}
+
 /** 512-entry 4-point gaussian interpolation table, spec-copied from psx-spx. */
 export const GAUSS = new Int16Array([
   -1, -1, -1, -1, -1, -1, -1, -1,
@@ -129,6 +139,56 @@ export function applyVolume(sample: number, volume: number): number {
   return (sample * volume) >> 15;
 }
 
+/**
+ * One sweep-envelope update (psx-spx envelope operation, same math as the
+ * ADSR phases: rate 7 bits, counter 8000h >> max(0, shift-11), exponential
+ * decrease scales the step by the level, exponential increase slows above
+ * 6000h). `level` is updated in place; returns false when the sweep is
+ * finished (reached 0000h decreasing, or ±7FFFh increasing).
+ */
+export function sweepStep(
+  level: number,
+  params: SweepParams,
+  counterState: { counter: number },
+): { level: number; active: boolean } {
+  const shift = params.rate >>> 2;
+  const stepRaw = params.rate & 3;
+  let step = 7 - stepRaw;
+  if (params.decreasing !== params.phaseNegative) step = ~step; // +7..+4 => -8..-5
+  step <<= Math.max(0, 11 - shift);
+  let increment = 0x8000 >>> Math.max(0, shift - 11);
+  const exponentialIncrease = params.exponential && !params.decreasing && level > 0x6000;
+  if (exponentialIncrease) {
+    if (shift < 10) step >>= 2;
+    else if (shift >= 11) increment >>= 2;
+    else { step >>= 1; increment >>= 1; }
+  }
+  // Rate all-ones (7Fh): the volume never steps and never saturates.
+  if (params.rate === 0x7f) return { level, active: true };
+  counterState.counter += Math.max(increment, 1);
+  if ((counterState.counter & 0x8000) === 0) return { level, active: true };
+  counterState.counter = 0;
+  if (params.exponential && params.decreasing) step = (step * level) >> 15;
+  let next = level + step;
+  if (!params.decreasing) next = Math.min(Math.max(next, -0x8000), 0x7fff);
+  else if (params.phaseNegative) next = Math.min(Math.max(next, -0x8000), 0);
+  else next = Math.max(next, 0);
+  const active = params.decreasing
+    ? (params.phaseNegative ? next < 0 && step !== 0 : next > 0)
+    : next !== (step < 0 ? -0x8000 : 0x7fff);
+  return { level: next, active };
+}
+
+/** Decode a sweep-mode volume register (bit15=1) into its envelope parameters. */
+export function sweepParams(reg: number): SweepParams {
+  return {
+    rate: reg & 0x7f,
+    decreasing: (reg & 0x2000) !== 0,
+    exponential: (reg & 0x4000) !== 0,
+    phaseNegative: (reg & 0x1000) !== 0,
+  };
+}
+
 /** ADSR envelope generator (no$psx/psx-spx ADSR chapter). */
 export class Adsr {
   phase: AdsrPhase = "release";
@@ -211,6 +271,13 @@ export class SpuVoice {
   readonly hist = new Int16Array(4);
   pitchCounter = 0;
   bufIdx = 0;
+  /** Per-channel sweep envelope levels (N/0x8000 fixed point) and counters. */
+  sweepLevelL = 0x8000; // 1.0
+  sweepLevelR = 0x8000;
+  sweepActiveL = false;
+  sweepActiveR = false;
+  private sweepCounterL = { counter: 0 };
+  private sweepCounterR = { counter: 0 };
   /** Set when a loop-end flag was seen; cleared on key on. Maps to ENDX. */
   endx = false;
   private curAddr = 0;
@@ -231,7 +298,38 @@ export class SpuVoice {
     this.endx = false;
     this.hist.fill(0);
     this.env.keyOn();
+    this.armSweeps();
     this.loadBlock(ram);
+  }
+
+  /** Direct volume applies immediately; sweep mode arms from the current level. */
+  private armSweeps(): void {
+    const arm = (reg: number): { level: number; active: boolean } => {
+      if ((reg & 0x8000) === 0) return { level: directVolume(reg), active: false };
+      // Sweep starts at the current (direct) volume — bit15=0 setting first,
+      // then the sweep parameter, per psx-spx.
+      const start = directVolume(this.regs[this.base]! & 0x7fff);
+      return { level: start, active: sweepParams(reg).rate !== 0x7f };
+    };
+    const l = arm(this.regs[this.base]!);
+    this.sweepLevelL = l.level; this.sweepActiveL = l.active;
+    const r = arm(this.regs[this.base + 1]!);
+    this.sweepLevelR = r.level; this.sweepActiveR = r.active;
+  }
+
+  /** Advance both sweep envelopes one 44.1kHz tick; no-op in direct mode. */
+  sweepTick(): void {
+    const apply = (
+      reg: number, level: number, active: boolean, counter: { counter: number },
+    ): { level: number; active: boolean } => {
+      if ((reg & 0x8000) === 0) return { level: directVolume(reg), active: false };
+      if (!active) return { level, active: false };
+      return sweepStep(level, sweepParams(reg), counter);
+    };
+    const l = apply(this.regs[this.base]!, this.sweepLevelL, this.sweepActiveL, this.sweepCounterL);
+    this.sweepLevelL = l.level; this.sweepActiveL = l.active;
+    const r = apply(this.regs[this.base + 1]!, this.sweepLevelR, this.sweepActiveR, this.sweepCounterR);
+    this.sweepLevelR = r.level; this.sweepActiveR = r.active;
   }
 
   /** Advance one 44.1kHz output sample: step pitch counter, decode as needed. */
