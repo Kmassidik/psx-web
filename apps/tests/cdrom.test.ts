@@ -333,6 +333,16 @@ describe("CDROM read-data sector delivery after ReadN", () => {
   });
 });
 
+describe("CDROM register banks", () => {
+  test("bank 1 port 1 writes data without issuing an invalid command", () => {
+    const { c, ints } = make();
+    c.write(0, 1);
+    c.write(1, 0x80);
+    expect(ints).toEqual([]);
+    expect(c.read(3)).toBe(0);
+  });
+});
+
 describe("CDROM error / latch behavior", () => {
   test("invalid opcode 7Fh: INT5(stat|01,40h) and error latch 40h", () => {
     const { c, ints } = make();
@@ -399,8 +409,9 @@ describe("CDROM ready status polarities", () => {
 describe("CDROM register 3 interrupt flags", () => {
   test("index 1 returns IFL instead of popping response data", () => {
     const { c } = make();
-    c.write(0, 1);
+    c.write(0, 0);
     c.write(1, 0x01);
+    c.write(0, 1);
     expect(c.read(3) & 7).toBe(3);
     c.ack(7);
     expect(c.read(3) & 7).toBe(0);

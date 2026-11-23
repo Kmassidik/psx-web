@@ -94,10 +94,16 @@ export class Cdrom {
         this.regs[0] = v & 3; // only bit0-1 are R/W
         break;
       case 1:
-        this.command(v);
+        // Port 1 is COMMAND only in bank 0. Bank 1 is WRDATA; banks 2/3
+        // are audio/control registers and must not create commands.
+        if ((this.regs[0]! & 3) === 0) this.command(v);
         break;
       case 2:
-        if (this.paramFifo.length < 16) this.paramFifo.push(v);
+        if ((this.regs[0]! & 3) === 0) {
+          if (this.paramFifo.length < 16) this.paramFifo.push(v);
+        } else if ((this.regs[0]! & 3) === 1) {
+          this.regs[4] = v; // HINTMSK
+        }
         break;
       case 3: {
         const idx = this.regs[0]! & 3;
