@@ -48,6 +48,7 @@ export interface DmaBus {
   mdecIn?(w: number): void;
   mdecOut?(): number;
   cdromRead?(): number;
+  spuWrite?(w: number): void;
   /** ch2 GPU sink: linked-list packets and block-mode GP0 words. */
   gpuWrite?(w: number): void;
 }
@@ -128,7 +129,7 @@ export class Dma {
         const w = bus.readRam(addr);
         if (ch === 0) bus.mdecIn?.(w);
         else if (ch === 2) bus.gpuWrite?.(w);
-        // ch4 SPU / others without a hook: address still advances (drain).
+        else if (ch === 4) bus.spuWrite?.(w);
       }
       addr = (addr + step) & RAM_ADDR_MASK;
     }

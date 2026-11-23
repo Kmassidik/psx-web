@@ -262,7 +262,7 @@ class Translator {
         return "simple";
       }
 
-      case 0x2a: // SW — block ends here (code-alias boundary per contract)
+      case 0x2b: // SW — block ends here (code-alias boundary per contract)
         this.flushLoadDelay(); // pending load lands before the next instr
         // i32.store takes [address][value]; call results drop (0x1a) so the
         // order stays: va scratch → drop → r[rt] → call write32 (func 1).

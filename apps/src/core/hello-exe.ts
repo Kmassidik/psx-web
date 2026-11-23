@@ -13,7 +13,7 @@ function ori(rt: number, rs: number, imm: number): number {
   return ((0x0d << 26) | (rs << 21) | (rt << 16) | (imm & 0xffff)) >>> 0;
 }
 function sw(rt: number, rs: number, off: number): number {
-  return ((0x2a << 26) | (rs << 21) | (rt << 16) | (off & 0xffff)) >>> 0;
+  return ((0x2b << 26) | (rs << 21) | (rt << 16) | (off & 0xffff)) >>> 0;
 }
 function j(target: number): number {
   return ((0x02 << 26) | ((target >>> 2) & 0x3ff_ffff)) >>> 0;

@@ -8,7 +8,7 @@ import { type PsxConfig } from "../../state/config";
 import { useApp, setConfig } from "../store";
 import { Dialog, buttonClass, entryClass, frameClass, frameTitleClass, labelClass, selectClass } from "./Dialog";
 
-const GPUDISPMODE_LABELS = ["Fullscreen Mode", "Window Mode"] as const;
+const GPUDISPMODE_LABELS = ["Window Mode", "Fullscreen Mode"] as const;
 const GPUIRES_OPTIONS = ["1: Normal Resolution", "2: Resolution x2", "4: Resolution x4"] as const;
 const GPURATIO_OPTIONS = ["0: Stretch", "1: 4:3", "2: Widescreen"] as const;
 const GPUBPROFILE_OPTIONS = ["0: Original", "1: Brightness", "2: More brightness", "3: Most brightness"] as const;
@@ -47,40 +47,39 @@ export function VideoConfigDialog({ onClose }: VideoConfigDialogProps) {
       onClose={onClose}
       onOk={() => setConfig(cfg)}
     >
-      <div className="flex flex-col gap-3">
+      <div className="dialog-stack">
         <fieldset className={frameClass}>
           <legend className={frameTitleClass}>Resolutions and Colors</legend>
-          <div className="flex flex-col gap-2">
-            <div className="flex items-center gap-6">
-              <span className={labelClass}>Display Mode</span>
+          <div className="gpu-fields">
+            <div className="display-mode-options">
               {GPUDISPMODE_LABELS.map((label, i) => (
-                <label key={label} className="flex items-center gap-1.5 text-[13px]">
+                <label key={label} className="check-label">
                   <input
                     type="radio"
                     name="gpudispmode"
-                    checked={cfg.Scanlines === (i === 0)}
-                    onChange={() => patch({ Scanlines: i === 0 })}
+                    checked={i === 0 ? !cfg.Scanlines : cfg.Scanlines}
+                    onChange={() => patch({ Scanlines: i === 1 })}
                   />
                   {label}
                 </label>
               ))}
             </div>
-            <div className="flex items-center gap-2">
-              <span className={`${labelClass} w-[150px] text-right`}>Window Size</span>
+            <div className="gpu-control-row window-size-row">
+              <span className={`${labelClass} field-label`}>Window Size</span>
               <input
-                className={`${entryClass} w-16`}
+                className={`${entryClass} size-entry`}
                 value={String(cfg.ResolutionX)}
                 onChange={(e) => patch({ ResolutionX: Number(e.target.value) || 0 })}
               />
               <span className={labelClass}>x</span>
               <input
-                className={`${entryClass} w-16`}
+                className={`${entryClass} size-entry`}
                 value={String(cfg.ResolutionY)}
                 onChange={(e) => patch({ ResolutionY: Number(e.target.value) || 0 })}
               />
             </div>
-            <div className="flex items-center gap-2">
-              <span className={`${labelClass} w-[150px] text-right`}>FullScreen Size</span>
+            <div className="gpu-control-row">
+              <span className={`${labelClass} field-label`}>FullScreen Size</span>
               <select
                 className={selectClass}
                 value={`${cfg.ResolutionX}x${cfg.ResolutionY}`}
@@ -94,8 +93,8 @@ export function VideoConfigDialog({ onClose }: VideoConfigDialogProps) {
                 ))}
               </select>
             </div>
-            <div className="flex items-center gap-2">
-              <span className={`${labelClass} w-[150px] text-right`}>Internal Resolution</span>
+            <div className="gpu-control-row">
+              <span className={`${labelClass} field-label`}>Internal Resolution</span>
               <select
                 className={selectClass}
                 value={cfg.CpuOverclocking === 1 ? 0 : cfg.CpuOverclocking === 2 ? 1 : 2}
@@ -110,8 +109,8 @@ export function VideoConfigDialog({ onClose }: VideoConfigDialogProps) {
                 ))}
               </select>
             </div>
-            <div className="flex items-center gap-2">
-              <span className={`${labelClass} w-[150px] text-right`}>Brightness Profile</span>
+            <div className="gpu-control-row">
+              <span className={`${labelClass} field-label`}>Brightness Profile</span>
               <select
                 className={selectClass}
                 value={cfg.SpuQuality - 1}
@@ -124,8 +123,8 @@ export function VideoConfigDialog({ onClose }: VideoConfigDialogProps) {
                 ))}
               </select>
             </div>
-            <div className="flex items-center gap-2">
-              <span className={`${labelClass} w-[150px] text-right`}>Screen Ratio</span>
+            <div className="gpu-control-row">
+              <span className={`${labelClass} field-label`}>Screen Ratio</span>
               <select
                 className={selectClass}
                 value={cfg.Widescreen ? 2 : 1}
@@ -138,8 +137,8 @@ export function VideoConfigDialog({ onClose }: VideoConfigDialogProps) {
                 ))}
               </select>
             </div>
-            <div className="flex items-center gap-2">
-              <span className={`${labelClass} w-[150px] text-right`}>Blit Mode</span>
+            <div className="gpu-control-row">
+              <span className={`${labelClass} field-label`}>Blit Mode</span>
               <select
                 className={selectClass}
                 value={cfg.BiosHLE ? 0 : 1}
@@ -152,8 +151,8 @@ export function VideoConfigDialog({ onClose }: VideoConfigDialogProps) {
                 ))}
               </select>
             </div>
-            <div className="flex items-center gap-2">
-              <span className={`${labelClass} w-[150px] text-right`}>Threading Mode</span>
+            <div className="gpu-control-row">
+              <span className={`${labelClass} field-label`}>Threading Mode</span>
               <select
                 className={selectClass}
                 value={cfg.Dynarec ? 1 : 0}
@@ -171,8 +170,8 @@ export function VideoConfigDialog({ onClose }: VideoConfigDialogProps) {
 
         <fieldset className={frameClass}>
           <legend className={frameTitleClass}>Framerate</legend>
-          <div className="flex flex-wrap items-center gap-4">
-            <label className="flex items-center gap-1.5 text-[13px]">
+          <div className="framerate-grid">
+            <label className="check-label">
               <input
                 type="checkbox"
                 checked={cfg.ShowFPS}
@@ -180,7 +179,7 @@ export function VideoConfigDialog({ onClose }: VideoConfigDialogProps) {
               />
               Show FPS
             </label>
-            <label className="flex items-center gap-1.5 text-[13px]">
+            <label className="check-label">
               <input
                 type="checkbox"
                 checked={cfg.FrameLimit}
@@ -188,7 +187,7 @@ export function VideoConfigDialog({ onClose }: VideoConfigDialogProps) {
               />
               Enable FPS Limit
             </label>
-            <label className="flex items-center gap-1.5 text-[13px]">
+            <label className="check-label">
               <input
                 type="checkbox"
                 checked={cfg.FrameSkip > 0}
@@ -196,10 +195,10 @@ export function VideoConfigDialog({ onClose }: VideoConfigDialogProps) {
               />
               Enable Frameskip
             </label>
-            <label className="flex items-center gap-1.5 text-[13px]">
+            <label className="check-label custom-fps">
               <span className={labelClass}>Custom FPS (0=disabled)</span>
               <input
-                className={`${entryClass} w-16`}
+                className={`${entryClass} size-entry`}
                 value={String(cfg.FrameSkip)}
                 onChange={(e) => patch({ FrameSkip: Number(e.target.value) || 0 })}
               />
@@ -209,8 +208,8 @@ export function VideoConfigDialog({ onClose }: VideoConfigDialogProps) {
 
         <fieldset className={frameClass}>
           <legend className={frameTitleClass}>Fullscreen Filters</legend>
-          <div className="flex flex-col gap-2">
-            <label className="flex items-center gap-1.5 text-[13px]">
+          <div className="gpu-fields">
+            <label className="check-label">
               <input
                 type="checkbox"
                 checked={cfg.Vsync}
@@ -218,7 +217,7 @@ export function VideoConfigDialog({ onClose }: VideoConfigDialogProps) {
               />
               Screen filtering
             </label>
-            <label className="flex items-center gap-1.5 text-[13px]">
+            <label className="check-label">
               <input
                 type="checkbox"
                 checked={cfg.EnableGUI}
@@ -226,8 +225,8 @@ export function VideoConfigDialog({ onClose }: VideoConfigDialogProps) {
               />
               Fullscreen bilinear filter
             </label>
-            <div className="flex items-center gap-2">
-              <span className={`${labelClass} w-[150px]`}>Filter for 2D games</span>
+            <div className="gpu-control-row">
+              <span className={`${labelClass} field-label`}>Filter for 2D games</span>
               <select
                 className={selectClass}
                 value={cfg.Filter2D}
@@ -240,8 +239,8 @@ export function VideoConfigDialog({ onClose }: VideoConfigDialogProps) {
                 ))}
               </select>
             </div>
-            <div className="flex items-center gap-2">
-              <span className={`${labelClass} w-[150px]`}>Shader Effects</span>
+            <div className="gpu-control-row shader-row">
+              <span className={`${labelClass} field-label`}>Shader Effects</span>
               <select
                 className={selectClass}
                 value={cfg.Shader === "" ? "0: None" : cfg.Shader}

@@ -3,15 +3,14 @@
  * Mirrors the reference SPU core minus reverb (skipped this phase, later
  * ticket) and minus pitch modulation / noise / sweep envelopes.
  *
- * regs = Uint16Array(0x200), u16 offsets from 0x1F801C00:
- *   0x0000/02  MVOLL/MVOLR (main volume)     0x0080-0x00DF voice 0-23 blocks
- *   0x0088/8A  KON key-on (write)            0x008C/8E  KOF key-off (write)
- *   0x0090/92  PMON (unused)                 0x0094/96  NON (unused)
- *   0x0098/9A  EON (unused)                  0x009C/9E  ENDX status
- *   0x00D8/DA  EVOLL/EVOLR (unused)          0x00DC/DE  EVOLXL/XR
- *   0x00A6     transfer addr, 0x00A8 data port, 0x00AA ATTR (control)
- *   0x00AE     STATX (status), 0x00DA = 0x1DAA ATTR mirrored in this layout.
- * Voice block n (8 u16s at 0x80 + n*8): VOLL,VOLR,PITCH,SSA,ADSR1,ADSR2,ENVX,LSAX.
+ * regs = Uint16Array(0x200), u16 registers at byte offsets from 0x1F801C00:
+ *   0x0000-0x017F voice 0-23 blocks          0x0180/182 MVOLL/MVOLR
+ *   0x0188/18A KON key-on (write)            0x018C/18E KOF key-off (write)
+ *   0x0190/192 PMON (unused)                 0x0194/196 NON (unused)
+ *   0x0198/19A EON (unused)                  0x019C/19E ENDX status
+ *   0x01A4 IRQ address, 0x01A6 transfer addr, 0x01A8 data port
+ *   0x01AA ATTR (control), 0x01AE STATX (status)
+ * Voice block n (8 u16s at n*8): VOLL,VOLR,PITCH,SSA,ADSR1,ADSR2,ENVX,LSAX.
  */
 import { SpuVoice, applyVolume, directVolume } from "./spu-voice";
 
@@ -31,14 +30,14 @@ export class Spu {
   private irqPending = false;
 
   constructor() {
-    for (let n = 0; n < 24; n++) this.voices.push(new SpuVoice(n, this.regs, 0x80 + n * 8));
-    this.regs[0xae] = 0x001c; // STATX power-on default
+    for (let n = 0; n < 24; n++) this.voices.push(new SpuVoice(n, this.regs, n * 8));
+    this.regs[0x1ae] = 0x001c; // STATX power-on default
   }
 
   reset(): void {
     this.regs.fill(0);
     this.ram.fill(0);
-    this.regs[0xae] = 0x001c;
+    this.regs[0x1ae] = 0x001c;
     this.endx = 0;
     this.transferAddr = 0;
     this.irqAddr = 0;
@@ -50,58 +49,58 @@ export class Spu {
 
   read(offset: number): number {
     switch (offset) {
-      case 0x009c: return this.endx & 0xffff; // ENDX0
-      case 0x009e: return (this.endx >>> 16) & 0x00ff; // ENDX1
-      case 0x00ae: return (this.regs[0xae]! & 0xff80) | (this.irqEnabled ? 0x40 : 0) |
-        (this.irqPending ? 0x40 : 0) | (this.regs[0xaa]! & 0x3f); // STATX
-      default: return this.regs[offset]!;
+      case 0x019c: return this.endx & 0xffff; // ENDX0
+      case 0x019e: return (this.endx >>> 16) & 0x00ff; // ENDX1
+      case 0x01ae: return (this.regs[0x1ae]! & 0xff80) | (this.irqEnabled ? 0x40 : 0) |
+        (this.irqPending ? 0x40 : 0) | (this.regs[0x1aa]! & 0x3f); // STATX
+      default: return this.regs[offset < 0x180 ? offset >>> 1 : offset]!;
     }
   }
 
   write(offset: number, value: number): void {
     value &= 0xffff;
     switch (offset) {
-      case 0x0088: // KON voices 0-15
+      case 0x0188: // KON voices 0-15
         this.applyKeyOn(value, 0);
         return;
-      case 0x008a: // KON voices 16-23
+      case 0x018a: // KON voices 16-23
         this.applyKeyOn(value & 0x00ff, 16);
         return;
-      case 0x008c: // KOF voices 0-15
+      case 0x018c: // KOF voices 0-15
         this.applyKeyOff(value, 0);
         return;
-      case 0x008e: // KOF voices 16-23
+      case 0x018e: // KOF voices 16-23
         this.applyKeyOff(value & 0x00ff, 16);
         return;
-      case 0x009c: // ENDX0/1: writes clear the latched bits
+      case 0x019c: // ENDX0/1: writes clear the latched bits
         this.endx &= ~value;
         this.syncEndx();
         return;
-      case 0x009e:
+      case 0x019e:
         this.endx &= ~(value & 0xff) << 16;
         this.syncEndx();
         return;
-      case 0x00a4: // IRQA
+      case 0x01a4: // IRQA
         this.irqAddr = (value << 3) & 0x7ffff;
         this.regs[offset] = value;
         return;
-      case 0x00aa: // ATTR: bit6 enables the SPU interrupt
+      case 0x01aa: // ATTR: bit6 enables the SPU interrupt
         this.irqEnabled = (value & 0x40) !== 0;
         if (!this.irqEnabled) this.irqPending = false;
         this.regs[offset] = value;
         return;
-      case 0x00a6: // TSA: transfer start address (8-byte units)
+      case 0x01a6: // TSA: transfer start address (8-byte units)
         this.regs[offset] = value;
         this.transferAddr = (value << 3) & 0x7ffff;
         return;
-      case 0x00a8: { // data port: each halfword write increments current addr
+      case 0x01a8: { // data port: each halfword write increments current addr
         this.ram[this.transferAddr] = value & 0xff;
         this.ram[(this.transferAddr + 1) & 0x7ffff] = value >>> 8;
         this.transferAddr = (this.transferAddr + 2) & 0x7ffff;
         return;
       }
       default:
-        this.regs[offset] = value;
+        this.regs[offset < 0x180 ? offset >>> 1 : offset] = value;
     }
   }
 
@@ -123,20 +122,20 @@ export class Spu {
   }
 
   private syncEndx(): void {
-    this.regs[0x009c] = this.endx & 0xffff;
-    this.regs[0x009e] = (this.endx >>> 16) & 0x00ff;
+    this.regs[0x019c] = this.endx & 0xffff;
+    this.regs[0x019e] = (this.endx >>> 16) & 0x00ff;
   }
 
   /** ---- Voice block access (voice n, register index 0-7) ---- */
 
   readVoice(n: number, reg: number): number {
     if (reg === 6) return this.voices[n]!.env.level; // ENVX is live level
-    return this.regs[0x80 + n * 8 + reg]!;
+    return this.regs[n * 8 + reg]!;
   }
 
   writeVoice(n: number, reg: number, value: number): void {
     if (reg === 6) return; // ENVX is read-only
-    this.regs[0x80 + n * 8 + reg] = value & 0xffff;
+    this.regs[n * 8 + reg] = value & 0xffff;
   }
 
   /** ---- Key on/off API mirroring the register semantics ---- */
@@ -156,7 +155,7 @@ export class Spu {
 
   /** Write halfwords to the data port starting at the transfer address. */
   writeDataPort(words: number[] | Uint16Array): void {
-    for (let i = 0; i < words.length; i++) this.write(0x00a8, words[i]!);
+    for (let i = 0; i < words.length; i++) this.write(0x01a8, words[i]!);
   }
 
   /** ---- Mixing ---- */
@@ -184,8 +183,8 @@ export class Spu {
 
   /** One 44.1kHz sample: clocks voices, decodes ADPCM, mixes to float. */
   private stepSample(mixL: Float32Array, mixR: Float32Array): void {
-    const spuOn = (this.regs[0xaa]! & 0x8000) !== 0;
-    const unmuted = (this.regs[0xaa]! & 0x4000) !== 0;
+    const spuOn = (this.regs[0x1aa]! & 0x8000) !== 0;
+    const unmuted = (this.regs[0x1aa]! & 0x4000) !== 0;
     let accL = 0;
     let accR = 0;
     // Voices always clock (hardware never stops ADPCM decode); ATTR only
@@ -201,16 +200,16 @@ export class Spu {
       const sample = voice.sample();
       // Final voice volume: (ENVX * VOLX) >> 15 (psx-spx).
       const env = voice.env.level;
-      const vL = applyVolume(applyVolume(sample, env), directVolume(this.regs[0x80 + voice.n * 8]!));
-      const vR = applyVolume(applyVolume(sample, env), directVolume(this.regs[0x81 + voice.n * 8]!));
+      const vL = applyVolume(applyVolume(sample, env), directVolume(this.regs[voice.n * 8]!));
+      const vR = applyVolume(applyVolume(sample, env), directVolume(this.regs[1 + voice.n * 8]!));
       accL += vL;
       accR += vR;
       this.checkVoiceIrq(voice);
     }
     accL = Math.max(-0x8000, Math.min(0x7fff, accL));
     accR = Math.max(-0x8000, Math.min(0x7fff, accR));
-    accL = applyVolume(accL, directVolume(this.regs[0x00d8]!)); // MVOLL
-    accR = applyVolume(accR, directVolume(this.regs[0x00da]!)); // MVOLR
+    accL = applyVolume(accL, directVolume(this.regs[0x0180]!)); // MVOLL
+    accR = applyVolume(accR, directVolume(this.regs[0x0182]!)); // MVOLR
     // Fire a latched SPU IRQ once (edge), before clearing the flag.
     if (this.irqPending) {
       this.irqPending = false;
@@ -223,7 +222,7 @@ export class Spu {
   /** SPU interrupt: trigger when a voice reads the block at IRQA. */
   private checkVoiceIrq(voice: SpuVoice): void {
     if (!this.irqEnabled || this.irqPending) return;
-    const blockAddr = (this.regs[0x00a4]! << 3) & 0x7ffff;
+    const blockAddr = (this.regs[0x01a4]! << 3) & 0x7ffff;
     if (voice.addr === blockAddr) this.irqPending = true;
   }
 

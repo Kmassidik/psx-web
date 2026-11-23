@@ -20,10 +20,12 @@ import { Gpu, VRAM_W, VRAM_H } from "./gpu";
 import { Rcnt } from "./rcnt";
 import { GTE } from "./gte";
 import { Dma } from "./dma";
-import { hleSyscall } from "./syscall";
+import { BiosKernel } from "./syscall";
 import { Cdrom } from "./cdrom";
 import { Spu } from "./spu";
 import { Mdec } from "./mdec";
+import type { SectorProvider } from "./loader/iso9660";
+import { Joypad } from "./joypad";
 
 export class Machine {
   readonly mem = new Memory();
@@ -41,7 +43,10 @@ export class Machine {
   private readonly gteCore = new GTE();
   irqStatus = 0;
   irqMask = 0;
+  readonly pads = { pad1: 0xffff, pad2: 0xffff };
+  readonly joypad = new Joypad(this.pads);
   readonly cpu: Cpu;
+  private readonly kernel: BiosKernel;
   /** 7-channel DMA controller (ch0 MDECin … ch6 OTC), DmaUnit delivery. */
   readonly dma = new Dma();
   /** CDROM controller (1F801800 + IRQ line 2). */
@@ -55,13 +60,18 @@ export class Machine {
 
   constructor() {
     this.rcnt.irqFire = (line) => { this.raiseIrq(1 << line); };
-    this.dma.raiseIrq = () => { this.raiseIrq(IRQ_DMA); };
+    this.dma.raiseIrq = () => {
+      this.raiseIrq(IRQ_DMA);
+      // SPU DMA (channel 4) completion: libspu reports "command completed".
+      if ((this.dma.dicr & (1 << 4)) !== 0) this.kernel.deliver(0xf000_0009, 0x20);
+    };
     this.cdrom.irqFire = () => { this.raiseIrq(IRQ_CDROM); };
     this.spu.irqFire = () => { this.raiseIrq(IRQ_SPU); };
     this.cpu = new Cpu(this.mem, this.rcnt, this.gte, {
       read32: (va) => this.portRead(va),
-      write32: (va, v) => this.portWrite(va, v),
-    }, (table, fn) => hleSyscall(table, fn) ?? 0);
+      write32: (va, v, width) => this.portWrite(va, v, width),
+    }, (table, fn) => this.kernel.call(table, fn));
+    this.kernel = new BiosKernel(this.cpu, this.gpu, this.pads);
   }
 
   /** DmaBus adapter: DMA reads/writes RAM words and drives GP0. */
@@ -69,11 +79,21 @@ export class Machine {
     readRam: (a: number) => this.mem.load32(a & 0x1f_fffc),
     writeRam: (a: number, v: number) => this.mem.store32(a & 0x1f_fffc, v),
     gpuWrite: (w: number) => this.gpu.writeGP0(w),
+    cdromRead: () => this.cdrom.readData32(),
+    spuWrite: (w: number) => {
+      this.spu.write(0x01a8, w & 0xffff);
+      this.spu.write(0x01a8, w >>> 16);
+    },
     readVram: (addr: number) => this.gpu.vram[addr & (VRAM_W * VRAM_H - 1)]!,
     writeVram: (addr: number, v: number) => {
       this.gpu.vram[addr & (VRAM_W * VRAM_H - 1)] = v & 0x7fff;
     },
   };
+
+  setSectorProvider(provider: SectorProvider): void {
+    this.cdrom.setSectorProvider(provider);
+    this.kernel.setSectorProvider(provider);
+  }
 
   raiseIrq(bits: number): void {
     this.irqStatus |= bits;
@@ -85,12 +105,14 @@ export class Machine {
       case 0x1f801074: return this.irqMask | 0;
       case 0x1f801810: case 0x1f801814: return this.gpu.readGPUSTAT();
       default: {
+        const joypadValue = this.joypad.read(va);
+        if (joypadValue !== undefined) return joypadValue;
         // DMA register window 0x1F801080-0x1F8010FF → DmaUnit regs.
         if (va >= 0x1f80_1080 && va <= 0x1f80_10f7) {
           if (va === 0x1f80_10f0) return this.dma.dpcr | 0;
           if (va === 0x1f80_10f4) return this.dma.dicr | 0;
-          const ch = ((va - 0x1f80_1080) / 12) | 0;
-          const off = va - 0x1f80_1080 - ch * 12;
+          const ch = ((va - 0x1f80_1080) / 16) | 0;
+          const off = va - 0x1f80_1080 - ch * 16;
           if (ch < 7 && off % 4 === 0 && off < 12) return this.dma.regs[ch * 3 + off / 4]! | 0;
         }
         // CDROM 0x1F801800-0x1F801803 (byte regs; 32-bit read = replicated).
@@ -98,10 +120,10 @@ export class Machine {
           const b = this.cdrom.read(va - 0x1f80_1800);
           return (b | (b << 8) | (b << 16) | (b << 24)) >>> 0;
         }
-        // SPU 0x1F801C00-0x1F801DFF (u16 regs; word read = lo|hi<<16).
+        // SPU 0x1F801C00-0x1F801DFF (byte offsets; word read = lo|hi<<16).
         if (va >= 0x1f80_1c00 && va <= 0x1f80_1dff) {
-          const off = (va - 0x1f80_1c00) >> 1;
-          return (this.spu.regs[off]! | (this.spu.regs[off + 1]! << 16)) >>> 0;
+          const off = va - 0x1f80_1c00;
+          return (this.spu.read(off) | (this.spu.read(off + 2) << 16)) >>> 0;
         }
         // MDEC 0x1F801820-0x1F80182F (MDEC0 data read / MDEC1 status).
         if (va === 0x1f80_1820) { const out = this.mdec.readOutput(); return out.length ? out[0]! >>> 0 : 0; }
@@ -111,18 +133,19 @@ export class Machine {
     }
   }
 
-  private portWrite(va: number, v: number): boolean {
+  private portWrite(va: number, v: number, width: number): boolean {
     switch (va) {
       case 0x1f801070: this.irqStatus &= ~v; return true; // ack clears
       case 0x1f801074: this.irqMask = v >>> 0; return true;
       case 0x1f801810: this.gpu.writeGP0(v); return true;
       case 0x1f801814: this.gpu.writeGP1(v); return true;
       default: {
+        if (this.joypad.write(va, v)) return true;
         if (va >= 0x1f80_1080 && va <= 0x1f80_10f7) {
           if (va === 0x1f80_10f0) { this.dma.dpcr = v >>> 0; return true; }
           if (va === 0x1f80_10f4) { this.dma.writeDicr(v >>> 0); return true; }
-          const ch = ((va - 0x1f80_1080) / 12) | 0;
-          const off = va - 0x1f80_1080 - ch * 12;
+          const ch = ((va - 0x1f80_1080) / 16) | 0;
+          const off = va - 0x1f80_1080 - ch * 16;
           if (ch < 7 && off % 4 === 0 && off < 12) {
             this.dma.regs[ch * 3 + off / 4] = v >>> 0;
             if (off === 8) this.dma.request(ch); // CHCR write triggers request
@@ -142,10 +165,11 @@ export class Machine {
           this.cdrom.write(off, v & 0xff);
           return true;
         }
-        // SPU u16 regs 0x1F801C00-0x1F801DFF.
+        // SPU u16 regs at byte offsets 0x1F801C00-0x1F801DFF.
         if (va >= 0x1f80_1c00 && va <= 0x1f80_1dff) {
-          const off = (va - 0x1f80_1c00) >> 1;
-          this.spu.regs[off] = v & 0xffff;
+          const off = va - 0x1f80_1c00;
+          this.spu.write(off, v & 0xffff);
+          if (width === 32) this.spu.write(off + 2, v >>> 16);
           return true;
         }
         // MDEC 0x1F801820 (data write) / 0x1F801824 (control).
@@ -161,18 +185,71 @@ export class Machine {
     this.dma.run(this.dmaBus);
   }
 
+  private runVblankHandler(): void {
+    this.runHandler(this.kernel.interruptHandler());
+  }
+
+  private runEventCallbacks(): void {
+    for (const callback of this.kernel.takeEventCallbacks()) this.runHandler(callback);
+  }
+
+  private runHandler(entry: number): void {
+    if (entry === 0) return;
+    const registers = this.cpu.r.slice();
+    const cp0 = this.cpu.cp0.slice();
+    const pc = this.cpu.pc, nextPc = this.cpu.nextPc;
+    const hi = this.cpu.hi, lo = this.cpu.lo;
+    const inBranchDelay = this.cpu.inBranchDelay;
+    const loadDelay = { ...this.cpu.loadDelay };
+    this.cpu.cp0[13] = 0x400;
+    this.cpu.cp0[14] = pc;
+    this.cpu.r[2] = 1; // custom exception hooks are entered with v0 = 1
+    this.cpu.pc = entry;
+    this.cpu.nextPc = (entry + 4) | 0;
+    this.cpu.r[31] = 0x8000_0110;
+    for (let i = 0; i < 10_000 && this.cpu.pc !== 0x8000_0110; i++) {
+      if (!this.cpu.step()) break;
+    }
+    this.cpu.r.set(registers);
+    this.cpu.cp0.set(cp0);
+    this.cpu.pc = pc;
+    this.cpu.nextPc = nextPc;
+    this.cpu.hi = hi;
+    this.cpu.lo = lo;
+    this.cpu.inBranchDelay = inBranchDelay;
+    this.cpu.loadDelay = loadDelay;
+  }
+
   private vblankAcc = 0;
 
   /** Run up to n CPU instructions with DMA/CDROM/SPU/rcnt service per slice. */
   runSlice(n: number): boolean {
+    const deliverException = (this.irqStatus & this.irqMask) !== 0 && (this.cpu.cp0[12]! & 0x401) === 0x401;
+    if (deliverException) {
+      this.cpu.exception(0, 0x400);
+      this.mem.store32(0x84, 0x4200_0010);
+    }
     const ok = this.cpu.run(n);
+    if (deliverException) this.runHandler(this.kernel.exceptionHook());
+    if ((this.irqStatus & this.irqMask & IRQ_CDROM) !== 0) {
+      this.irqStatus &= ~IRQ_CDROM;
+      this.cdrom.ack(0x07);
+      this.kernel.deliver(0xf000_0003, 0x1000);
+    }
     this.runDma();
+    this.runEventCallbacks();
+    this.cdrom.pump();
     this.cdrom.exec(); // one interrupt-bucket per slice (timing: see cdrom.ts)
     this.spu.tick(n); // SPU clock = cpu cycles / 768 internally
     // VBLANK: ~60Hz — accumulate CPU cycles and raise IRQ line 0 each frame
     // (N = cycles/frame ≈ 33.8M/60 ≈ 563k at 33.8MHz CPU).
     this.vblankAcc += n;
-    if (this.vblankAcc >= 563_000) { this.vblankAcc -= 563_000; this.raiseIrq(IRQ_VBLANK); }
+    if (this.vblankAcc >= 563_000) {
+      this.vblankAcc -= 563_000;
+      this.kernel.updatePads();
+      this.raiseIrq(IRQ_VBLANK);
+      this.runVblankHandler();
+    }
     // rcnt ticks on the same clock; slice granularity is fine for Phase 1
     return ok;
   }
@@ -211,6 +288,11 @@ export class Machine {
       const phys = va - 0x8000_0000;
       stub().forEach((w, i) => this.mem.store32(phys + 4 * i, w));
     }
+    // Minimal exception return: k0 = EPC; RFE; JR k0; NOP.
+    this.mem.store32(0x80, 0x401a_7000);
+    this.mem.store32(0x84, 0x4200_0010);
+    this.mem.store32(0x88, 0x0340_0008);
+    this.mem.store32(0x8c, 0);
   }
 
   /** load_bios spec (0x433540): fread(psxBIOS, 1, 0x80000) — 512 KiB max. */

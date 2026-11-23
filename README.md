@@ -48,6 +48,17 @@ bun test        # full suite
 bun run dev     # http://localhost:5173 — drop a PS-X EXE (or bios.bin)
 ```
 
+### Docker
+
+```sh
+docker build --target test -t psx-web-test .       # typecheck + full test suite
+docker build --target runtime -t psx-web .
+docker run --rm -p 5173:5173 psx-web
+```
+
+Open http://localhost:5173 and choose a PS-X EXE. The server binds to all
+interfaces inside the container; emulation still runs entirely in the browser.
+
 ## Legal
 
 No BIOS, game ROMs, or other copyrighted data is hosted here. The user supplies

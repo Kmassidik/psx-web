@@ -22,30 +22,24 @@ export function MemcardDialog({ onClose }: MemcardDialogProps) {
     <Dialog title="ePSXe memcards config" onClose={onClose} onOk={() => setConfig({ Memcard1: file1, Memcard2: file2 })}>
       <fieldset className={frameClass}>
         <legend className={frameTitleClass}>Select Memcards files</legend>
-        <div className="flex flex-col gap-2">
+        <div className="memcard-grid">
           {(
             [
               { slot: "1", file: file1, setFile: setFile1 },
               { slot: "2", file: file2, setFile: setFile2 },
             ] as const
           ).map(({ slot, file, setFile: set }) => (
-            <div key={slot} className="flex items-center gap-2">
-              <span className="w-4 text-center font-bold underline">{slot}</span>
+            <div key={slot} className="memcard-row">
+              <span className="memcard-number">{slot}</span>
               <input
-                className={`${entryClass} flex-1`}
+                className={entryClass}
                 value={file}
                 onChange={(e) => set(e.target.value)}
                 aria-label={`Memcard slot ${slot} file`}
               />
-              <button className={buttonClass} title="Choose memcard file">
-                Open
-              </button>
-              <button className={buttonClass} title="Format this memcard (UI only)">
-                Format
-              </button>
-              <button className={buttonClass} title="Eject this memcard (UI only)">
-                Eject
-              </button>
+              <button type="button" className={buttonClass} title="Choose memcard file">Open</button>
+              <button type="button" className={buttonClass} title="Format this memcard (UI only)">Format</button>
+              <button type="button" className={buttonClass} title="Eject this memcard (UI only)">Eject</button>
             </div>
           ))}
         </div>

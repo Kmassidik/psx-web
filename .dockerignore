@@ -1,0 +1,9 @@
+.git
+.github
+**/node_modules
+**/dist
+assets-games
+knowledge-base
+*.log
+apps/epsxe_x64
+apps/ePSXe205linux_x64.zip

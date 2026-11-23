@@ -4,32 +4,75 @@
  * Menu labels are the blueprint's, verbatim.
  * Phase 1: File/Run PS-EXE path boots the machine and blits frames via rAF.
  */
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import { parsePsExe } from "../core/loader/psexe";
 import { Machine } from "../core/machine";
-import { useApp, setState } from "./store";
+import { setConfig, setState, useApp } from "./store";
 import { VideoConfigDialog } from "./dialogs/VideoConfigDialog";
 import { GamepadConfigDialog } from "./dialogs/GamepadConfigDialog";
 import { MemcardDialog } from "./dialogs/MemcardDialog";
+
+type FileMode = "auto" | "exe" | "bios";
+type DialogName = "video" | "gamepad" | "memcard";
+
+interface MenuItemProps {
+  label: string;
+  action?: () => void;
+  checked?: boolean;
+  disabled?: boolean;
+  children?: ReactNode;
+}
+
+function MenuItem({ label, action, checked, disabled, children }: MenuItemProps) {
+  const submenu = children !== undefined;
+  return (
+    <li className={submenu ? "menu-has-submenu" : ""} role="none">
+      <button
+        type="button"
+        className="menu-item"
+        role={checked === undefined ? "menuitem" : "menuitemcheckbox"}
+        aria-checked={checked}
+        aria-haspopup={submenu || undefined}
+        data-command={action ? "" : undefined}
+        disabled={disabled}
+        onClick={action}
+      >
+        <span className="menu-mark" aria-hidden="true">{checked ? "✓" : ""}</span>
+        <span className="menu-label">{label}</span>
+        {submenu && <span className="submenu-arrow" aria-hidden="true">▶</span>}
+      </button>
+      {submenu && <ul className="menu-popup submenu" role="menu">{children}</ul>}
+    </li>
+  );
+}
+
+function MenuSeparator() {
+  return <li className="menu-separator" role="separator"><hr /></li>;
+}
+
+const stateSlots = [1, 2, 3, 4, 5];
+const overclockRates = [1, 1.5, 2, 3, 4];
 
 export function MainWindow() {
   const run = useApp((s) => s.run);
   const statusLine = useApp((s) => s.statusLine);
   const lastError = useApp((s) => s.lastError);
+  const config = useApp((s) => s.config);
   const [loaded, setLoaded] = useState<string | null>(null);
   const [dragOver, setDragOver] = useState(false);
   const [openMenu, setOpenMenu] = useState<string | null>(null);
-  const [dialog, setDialog] = useState<"video" | "gamepad" | "memcard" | null>(null);
+  const [dialog, setDialog] = useState<DialogName | null>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const fileInput = useRef<HTMLInputElement>(null);
+  const fileMode = useRef<FileMode>("auto");
   const machineRef = useRef<Machine | null>(null);
   const rafRef = useRef(0);
 
-  const boot = useCallback((buf: ArrayBuffer, name: string) => {
+  const boot = useCallback((buf: ArrayBuffer, name: string, mode: FileMode) => {
     try {
       const bytes = new Uint8Array(buf);
       // BIOS dump (512 KiB) vs PS-EXE: size discriminator (load_bios spec).
-      if (bytes.byteLength === 512 * 1024 && name.toLowerCase().includes("bios")) {
+      if (bytes.byteLength === 512 * 1024 && (mode === "bios" || name.toLowerCase().includes("bios"))) {
         const m = machineRef.current ?? new Machine();
         m.loadBios(bytes);
         machineRef.current = m;
@@ -79,87 +122,290 @@ export function MainWindow() {
     }
   }, []);
 
-  useEffect(() => () => cancelAnimationFrame(rafRef.current), []);
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setOpenMenu(null);
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => {
+      window.removeEventListener("keydown", onKeyDown);
+      cancelAnimationFrame(rafRef.current);
+    };
+  }, []);
 
   const onPick = useCallback(
-    (files: FileList | null) => {
-      const f = files?.[0];
-      if (!f) return;
-      f.arrayBuffer().then((buf) => boot(buf, f.name));
+    (files: FileList | null, mode: FileMode) => {
+      const file = files?.[0];
+      if (!file) return;
+      file.arrayBuffer().then((buf) => boot(buf, file.name, mode));
     },
     [boot],
   );
 
-  const menuStyle = "px-2 py-0.5 text-[13px] hover:bg-[#35507a] cursor-default select-none";
+  const openFile = (mode: FileMode) => {
+    fileMode.current = mode;
+    const input = fileInput.current;
+    if (!input) return;
+    input.accept = mode === "bios" ? ".bin,.rom" : mode === "exe" ? ".exe,.psexe,.psx" : ".exe,.bin,.psexe,.psx";
+    input.value = "";
+    input.click();
+  };
+
+  const openDialog = (name: DialogName) => {
+    setOpenMenu(null);
+    setDialog(name);
+  };
 
   return (
     <div
-      className="flex h-screen flex-col bg-[#1b1d20] text-[#d6d3c8] font-[system-ui] text-[13px]"
-      onDragOver={(e) => { e.preventDefault(); setDragOver(true); }}
+      className={`epsxe-window${dragOver ? " is-dragging" : ""}`}
+      onClick={() => setOpenMenu(null)}
+      onDragOver={(event) => { event.preventDefault(); setDragOver(true); }}
       onDragLeave={() => setDragOver(false)}
-      onDrop={(e) => { e.preventDefault(); setDragOver(false); onPick(e.dataTransfer.files); }}
+      onDrop={(event) => {
+        event.preventDefault();
+        setDragOver(false);
+        onPick(event.dataTransfer.files, "auto");
+      }}
     >
-      <div className="relative z-40 flex items-center gap-1 border-b border-[#2a2d31] bg-[#232629] px-1 py-1">
-        <span className={menuStyle}>File</span>
-        <span className={menuStyle}>Run</span>
-        <span className={menuStyle}>Config</span>
-        <span
-          className={menuStyle}
-          onClick={(e) => {
-            e.stopPropagation();
-            setOpenMenu(openMenu === "Options" ? null : "Options");
-          }}
-        >
-          Options
-        </span>
-        {openMenu === "Options" && (
-          <div
-            className="absolute left-[104px] top-full flex flex-col border border-[#2a2d31] bg-[#232629] py-1 shadow-lg"
-            onClick={() => setOpenMenu(null)}
-          >
-            <span className={menuStyle} onClick={() => setDialog("video")}>
-              Video
-            </span>
-            <span className={menuStyle} onClick={() => setDialog("gamepad")}>
-              Game Pads
-            </span>
-            <span className={menuStyle} onClick={() => setDialog("memcard")}>
-              Memory card
-            </span>
-          </div>
-        )}
-        <span className="ml-auto text-[11px] text-[#8a8880]">psx-web · from scratch</span>
-      </div>
+      <header className="window-titlebar">ePSXe</header>
+      <nav
+        className="menu-bar"
+        aria-label="ePSXe main menu"
+        onClick={(event) => {
+          event.stopPropagation();
+          if ((event.target as HTMLElement).closest("[data-command]")) setOpenMenu(null);
+        }}
+      >
+        <div className="top-menu">
+          <button
+            type="button"
+            className={`menu-top${openMenu === "File" ? " is-open" : ""}`}
+            aria-expanded={openMenu === "File"}
+            aria-haspopup="true"
+            onClick={(event) => {
+              event.stopPropagation();
+              setOpenMenu(openMenu === "File" ? null : "File");
+            }}
+            onMouseEnter={() => { if (openMenu) setOpenMenu("File"); }}
+          >File</button>
+          {openMenu === "File" && (
+            <ul className="menu-popup" role="menu">
+              <MenuItem label="Run CD-ROM" disabled />
+              <MenuItem label="Run ISO" disabled />
+              <MenuItem label="Run PS-EXE" action={() => openFile("exe")} />
+              <MenuItem label="Run BIOS" action={() => openFile("bios")} />
+              <MenuSeparator />
+              <MenuItem label="Open Gamelist" disabled />
+              <MenuSeparator />
+              <MenuItem label="Local Netplay">
+                <MenuItem label="Player 1" disabled />
+                <MenuItem label="Player 2" disabled />
+              </MenuItem>
+              <MenuSeparator />
+              <MenuItem label="Change Disc">
+                <MenuItem label="CD-ROM" disabled />
+                <MenuItem label="ISO" disabled />
+              </MenuItem>
+              <MenuSeparator />
+              <MenuItem label="Exit" disabled />
+            </ul>
+          )}
+        </div>
+
+        <div className="top-menu">
+          <button
+            type="button"
+            className={`menu-top${openMenu === "Run" ? " is-open" : ""}`}
+            aria-expanded={openMenu === "Run"}
+            aria-haspopup="true"
+            onClick={(event) => {
+              event.stopPropagation();
+              setOpenMenu(openMenu === "Run" ? null : "Run");
+            }}
+            onMouseEnter={() => { if (openMenu) setOpenMenu("Run"); }}
+          >Run</button>
+          {openMenu === "Run" && (
+            <ul className="menu-popup" role="menu">
+              <MenuItem label="Continue" disabled />
+              <MenuSeparator />
+              <MenuItem label="Reset" disabled />
+              <MenuSeparator />
+              <MenuItem label="Save State (F1)">
+                {stateSlots.map((slot) => <MenuItem key={slot} label={`Slot ${slot}`} disabled />)}
+              </MenuItem>
+              <MenuItem label="Load State (F3)">
+                {stateSlots.map((slot) => <MenuItem key={slot} label={`Slot ${slot}`} disabled />)}
+              </MenuItem>
+            </ul>
+          )}
+        </div>
+
+        <div className="top-menu">
+          <button
+            type="button"
+            className={`menu-top${openMenu === "Config" ? " is-open" : ""}`}
+            aria-expanded={openMenu === "Config"}
+            aria-haspopup="true"
+            onClick={(event) => {
+              event.stopPropagation();
+              setOpenMenu(openMenu === "Config" ? null : "Config");
+            }}
+            onMouseEnter={() => { if (openMenu) setOpenMenu("Config"); }}
+          >Config</button>
+          {openMenu === "Config" && (
+            <ul className="menu-popup" role="menu">
+              <MenuItem label="Plugins">
+                <MenuItem label="Video" disabled />
+                <MenuItem label="Sound" disabled />
+                <MenuItem label="Input Port 1" disabled />
+                <MenuItem label="Input Port 2" disabled />
+              </MenuItem>
+              <MenuItem label="Video" action={() => openDialog("video")} />
+              <MenuItem label="Sound" disabled />
+              <MenuItem label="Cd-rom" disabled />
+              <MenuItem label="Game Pads">
+                <MenuItem label="Port 1">
+                  <MenuItem label="Pad 1" action={() => openDialog("gamepad")} />
+                  <MenuItem label="Pad 2" action={() => openDialog("gamepad")} />
+                  <MenuItem label="Pad 3" action={() => openDialog("gamepad")} />
+                  <MenuItem label="Pad 4" action={() => openDialog("gamepad")} />
+                  <MenuItem label="Multitap" disabled />
+                  <MenuItem label="Autofire Pad 1" disabled />
+                </MenuItem>
+                <MenuItem label="Port 2">
+                  <MenuItem label="Pad 1" action={() => openDialog("gamepad")} />
+                  <MenuItem label="Pad 2" action={() => openDialog("gamepad")} />
+                  <MenuItem label="Pad 3" action={() => openDialog("gamepad")} />
+                  <MenuItem label="Pad 4" action={() => openDialog("gamepad")} />
+                  <MenuItem label="Multitap" disabled />
+                  <MenuItem label="Autofire Pad 2" disabled />
+                </MenuItem>
+              </MenuItem>
+              <MenuSeparator />
+              <MenuItem label="Bios" disabled />
+              <MenuSeparator />
+              <MenuItem label="Memory card" action={() => openDialog("memcard")} />
+            </ul>
+          )}
+        </div>
+
+        <div className="top-menu">
+          <button
+            type="button"
+            className={`menu-top${openMenu === "Options" ? " is-open" : ""}`}
+            aria-expanded={openMenu === "Options"}
+            aria-haspopup="true"
+            onClick={(event) => {
+              event.stopPropagation();
+              setOpenMenu(openMenu === "Options" ? null : "Options");
+            }}
+            onMouseEnter={() => { if (openMenu) setOpenMenu("Options"); }}
+          >Options</button>
+          {openMenu === "Options" && (
+            <ul className="menu-popup" role="menu">
+              <MenuItem label="CPU Overclocking">
+                {overclockRates.map((rate) => (
+                  <MenuItem
+                    key={rate}
+                    label={`x${rate}`}
+                    checked={config.CpuOverclocking === rate}
+                    action={() => setConfig({ CpuOverclocking: rate })}
+                  />
+                ))}
+              </MenuItem>
+              <MenuItem label="CPU Mode">
+                <MenuItem
+                  label="Dynarec (fast)"
+                  checked={config.Dynarec}
+                  action={() => setConfig({ Dynarec: true })}
+                />
+                <MenuItem
+                  label="Interpreter (Accurate)"
+                  checked={!config.Dynarec}
+                  action={() => setConfig({ Dynarec: false })}
+                />
+              </MenuItem>
+              <MenuItem label="GTE hacks">
+                <MenuItem
+                  label="Widescreen"
+                  checked={config.Widescreen}
+                  action={() => setConfig({ Widescreen: !config.Widescreen })}
+                />
+                <MenuItem label="Subpixel precision" disabled />
+              </MenuItem>
+              <MenuItem label="Auto load ppf files" disabled />
+              <MenuItem label="Cheat codes" disabled />
+              <MenuItem label="Game Profiles">
+                <MenuItem label="Save Profile" disabled />
+                <MenuItem label="Delete Profile" disabled />
+              </MenuItem>
+            </ul>
+          )}
+        </div>
+
+        <div className="top-menu help-menu">
+          <button
+            type="button"
+            className={`menu-top${openMenu === "Help" ? " is-open" : ""}`}
+            aria-expanded={openMenu === "Help"}
+            aria-haspopup="true"
+            onClick={(event) => {
+              event.stopPropagation();
+              setOpenMenu(openMenu === "Help" ? null : "Help");
+            }}
+            onMouseEnter={() => { if (openMenu) setOpenMenu("Help"); }}
+          >Help</button>
+          {openMenu === "Help" && (
+            <ul className="menu-popup" role="menu">
+              <MenuItem label="Visit ePSXe website" action={() => window.open("https://www.epsxe.com", "_blank", "noopener,noreferrer")} />
+              <MenuSeparator />
+              <MenuItem label="About" disabled />
+            </ul>
+          )}
+        </div>
+      </nav>
+
+      <main
+        className="display-area"
+        onClick={() => openFile("auto")}
+        onKeyDown={(event) => {
+          if (event.key === "Enter" || event.key === " ") openFile("auto");
+        }}
+        role="button"
+        tabIndex={0}
+        aria-label="Open a PS-X EXE"
+      >
+        <div className="canvas-shell">
+          <canvas ref={canvasRef} width={640} height={480} className="game-canvas" />
+          {!loaded && (
+            <div className="display-hint" aria-hidden="true">
+              <span className="epsxe-wordmark">ePSXe</span>
+              <span>Drop a PS-X EXE here or choose File → Run PS-EXE</span>
+            </div>
+          )}
+        </div>
+      </main>
+      <input
+        ref={fileInput}
+        type="file"
+        accept=".exe,.bin,.psexe,.psx"
+        className="file-input"
+        onChange={(event) => {
+          const mode = fileMode.current;
+          onPick(event.currentTarget.files, mode);
+          fileMode.current = "auto";
+        }}
+      />
+
+      <footer className="status-bar">
+        <span className={`status-message${lastError ? " has-error" : ""}`}>{lastError || statusLine}</span>
+        <span className="status-file">{loaded ? `${loaded} · ${run}` : "No game loaded"}</span>
+      </footer>
+
       {dialog === "video" && <VideoConfigDialog onClose={() => setDialog(null)} />}
       {dialog === "gamepad" && <GamepadConfigDialog onClose={() => setDialog(null)} />}
       {dialog === "memcard" && <MemcardDialog onClose={() => setDialog(null)} />}
-
-      <div
-        className={`flex flex-1 items-center justify-center ${dragOver ? "bg-[#232d3a]" : ""}`}
-        onClick={() => fileInput.current?.click()}
-      >
-        <canvas
-          ref={canvasRef}
-          width={640}
-          height={480}
-          className="border border-[#2a2d31] bg-black"
-          style={{ imageRendering: "pixelated", maxWidth: "90vw", maxHeight: "70vh" }}
-        />
-        <input
-          ref={fileInput}
-          type="file"
-          accept=".exe,.bin,.psexe,.psx"
-          className="hidden"
-          onChange={(e) => onPick(e.target.files)}
-        />
-      </div>
-
-      <div className="flex items-center justify-between border-t border-[#2a2d31] bg-[#232629] px-3 py-1">
-        <span className={lastError ? "text-[#e06c60]" : "text-[#9aa87c]"}>{lastError || statusLine}</span>
-        <span className="text-[11px] text-[#8a8880]">
-          {loaded ? `${loaded} · ${run}` : "drop a PS-X EXE to boot (no BIOS needed)"}
-        </span>
-      </div>
     </div>
   );
 }

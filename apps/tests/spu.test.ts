@@ -93,24 +93,24 @@ describe("SPU ADPCM decode", () => {
     // Block at 16: loop-end+mute (flags 0x01), nibble 0
     spu.ram[16] = 0x0c; spu.ram[17] = 0x01; spu.ram[18] = 0x00;
     const voice = spu.voices[0]!;
-    spu.regs[0x80 + V_SSA] = 0; // start at block 0
-    spu.regs[0x80 + V_LSAX] = 0;
-    spu.regs[0x80 + V_PITCH] = 0x4000; // 4 samples per clock
-    spu.regs[0x80 + V_ADSR1] = 0x000f; // fast linear attack
-    spu.regs[0x80 + V_ADSR2] = 0xf000;
+    spu.regs[V_SSA] = 0; // start at block 0
+    spu.regs[V_LSAX] = 0;
+    spu.regs[V_PITCH] = 0x4000; // 4 samples per clock
+    spu.regs[V_ADSR1] = 0x000f; // fast linear attack
+    spu.regs[V_ADSR2] = 0xf000;
     spu.keyOn(1);
     for (let i = 0; i < 40; i++) spu.tick(768);
     // LSAX register was overwritten with the loop-start block address (0).
-    expect(spu.regs[0x80 + V_LSAX]).toBe(0);
+    expect(spu.regs[V_LSAX]).toBe(0);
     expect(voice.endx).toBe(true);
     // End+mute forced envelope to release at level 0.
     expect(voice.env.phase).toBe("release");
     expect(voice.env.level).toBe(0);
     // ENDX latch visible in the status register.
-    expect(spu.read(0x009c) & 1).not.toBe(0);
+    expect(spu.read(0x019c) & 1).not.toBe(0);
     // Key-on clears ENDX again.
     spu.keyOn(1);
-    expect(spu.read(0x009c) & 1).toBe(0);
+    expect(spu.read(0x019c) & 1).toBe(0);
   });
 
   test("end+repeat flag loops back to repeat address without muting", () => {
@@ -120,10 +120,10 @@ describe("SPU ADPCM decode", () => {
     spu.ram[1] = 0x07; // end + repeat + start
     spu.ram[2] = 0x77; // nibbles all 7 -> samples 7<<9
     const voice = spu.voices[0]!;
-    spu.regs[0x80 + V_SSA] = 0;
-    spu.regs[0x80 + V_PITCH] = 0x1000;
-    spu.regs[0x80 + V_ADSR1] = 0x7fef; // attack: linear, shift 31, step 7
-    spu.regs[0x80 + V_ADSR2] = 0x0000;
+    spu.regs[V_SSA] = 0;
+    spu.regs[V_PITCH] = 0x1000;
+    spu.regs[V_ADSR1] = 0x7fef; // attack: linear, shift 31, step 7
+    spu.regs[V_ADSR2] = 0x0000;
     spu.keyOn(1);
     for (let i = 0; i < 200; i++) spu.tick(768);
     expect(voice.endx).toBe(true);
@@ -280,12 +280,12 @@ describe("SPU ADSR envelope", () => {
 
   test("ENVX register mirrors live envelope level", () => {
     const spu = new Spu();
-    spu.regs[0x80 + V_ADSR1] = 0x000f; // fast linear attack
-    spu.regs[0x80 + V_ADSR2] = 0xf000;
-    spu.regs[0x80 + V_SSA] = 0;
-    spu.regs[0x80 + V_PITCH] = 0x1000;
-    spu.regs[0x80 + V_ADSR1] = 0x000f;
-    spu.regs[0x80 + V_ADSR2] = 0xf000;
+    spu.regs[V_ADSR1] = 0x000f; // fast linear attack
+    spu.regs[V_ADSR2] = 0xf000;
+    spu.regs[V_SSA] = 0;
+    spu.regs[V_PITCH] = 0x1000;
+    spu.regs[V_ADSR1] = 0x000f;
+    spu.regs[V_ADSR2] = 0xf000;
     spu.keyOn(1);
     spu.tick(768 * 3);
     expect(spu.readVoice(0, 6)).toBe(spu.voices[0]!.env.level);
@@ -298,15 +298,15 @@ describe("SPU key on/off and register semantics", () => {
     const spu = new Spu();
     spu.writeVoice(3, V_SSA, 0);
     spu.writeVoice(3, V_PITCH, 0x1000);
-    spu.regs[0x80 + 3 * 8 + V_ADSR1] = 0x000f;
-    spu.regs[0x80 + 3 * 8 + V_ADSR2] = 0xf000;
-    spu.write(0x0088, 1 << 3); // KON voice 3
+    spu.regs[3 * 8 + V_ADSR1] = 0x000f;
+    spu.regs[3 * 8 + V_ADSR2] = 0xf000;
+    spu.write(0x0188, 1 << 3); // KON voice 3
     expect(spu.voices[3]!.env.phase).toBe("attack");
-    spu.write(0x008c, 1 << 3); // KOF voice 3
+    spu.write(0x018c, 1 << 3); // KOF voice 3
     expect(spu.voices[3]!.env.phase).toBe("release");
-    spu.write(0x008a, 1 << 7); // KON1: voice 16+7 = 23
+    spu.write(0x018a, 1 << 7); // KON1: voice 16+7 = 23
     expect(spu.voices[23]!.env.phase).toBe("attack");
-    spu.write(0x008e, 1 << 7);
+    spu.write(0x018e, 1 << 7);
     expect(spu.voices[23]!.env.phase).toBe("release");
   });
 
@@ -339,13 +339,13 @@ describe("SPU key on/off and register semantics", () => {
 
   test("data port writes land in SPU RAM and advance transfer address", () => {
     const spu = new Spu();
-    spu.write(0x00a6, 0x10); // TSA: byte address 0x80
+    spu.write(0x01a6, 0x10); // TSA: byte address 0x80
     spu.writeDataPort([0x1234, 0xbeef]);
     expect(spu.ram[0x80]).toBe(0x34);
     expect(spu.ram[0x81]).toBe(0x12);
     expect(spu.ram[0x82]).toBe(0xef);
     expect(spu.ram[0x83]).toBe(0xbe);
-    expect(spu.read(0x00a6)).toBe(0x10); // register does not increment
+    expect(spu.read(0x01a6)).toBe(0x10); // register does not increment
   });
 
   test("ENVX register writes are ignored (read-only)", () => {
@@ -362,15 +362,15 @@ describe("SPU mixing", () => {
     const pcm = new Array(64).fill(3584);
     const adpcm = encodeSimpleFilter0(pcm, 3);
     spu.ram.set(adpcm, 0);
-    spu.regs[0x80 + V_SSA] = 0;
-    spu.regs[0x80 + V_PITCH] = 0x1000;
-    spu.regs[0x80 + V_ADSR1] = 0x000f; // fast attack to max
-    spu.regs[0x80 + V_ADSR2] = 0xf000; // sustain linear increase
-    spu.regs[0x80 + V_VOLL] = 0x3fff; // voice volume ~max
-    spu.regs[0x81 + V_VOLL] = 0x3fff; // VOLR
-    spu.regs[0x00d8] = 0x3fff; // main volume ~max
-    spu.regs[0x00da] = 0x3fff;
-    spu.write(0x00aa, 0xc000); // ATTR: SPU enable + unmute
+    spu.regs[V_SSA] = 0;
+    spu.regs[V_PITCH] = 0x1000;
+    spu.regs[V_ADSR1] = 0x000f; // fast attack to max
+    spu.regs[V_ADSR2] = 0xf000; // sustain linear increase
+    spu.regs[V_VOLL] = 0x3fff; // voice volume ~max
+    spu.regs[1 + V_VOLL] = 0x3fff; // VOLR
+    spu.regs[0x0180] = 0x3fff; // main volume ~max
+    spu.regs[0x0182] = 0x3fff;
+    spu.write(0x01aa, 0xc000); // ATTR: SPU enable + unmute
     spu.keyOn(1);
     const outL = new Float32Array(1000);
     const outR = new Float32Array(1000);
@@ -391,15 +391,15 @@ describe("SPU mixing", () => {
     const spu = new Spu();
     const pcm = new Array(64).fill(3584);
     spu.ram.set(encodeSimpleFilter0(pcm, 3), 0);
-    spu.regs[0x80 + V_SSA] = 0;
-    spu.regs[0x80 + V_PITCH] = 0x1000;
-    spu.regs[0x80 + V_ADSR1] = 0x000f;
-    spu.regs[0x80 + V_ADSR2] = 0xf000;
-    spu.regs[0x80 + V_VOLL] = 0x3fff;
-    spu.regs[0x81 + V_VOLL] = 0x3fff; // VOLR
-    spu.regs[0x00d8] = 0x3fff;
-    spu.regs[0x00da] = 0x3fff;
-    spu.write(0x00aa, 0x8000); // enabled but muted (bit14=0)
+    spu.regs[V_SSA] = 0;
+    spu.regs[V_PITCH] = 0x1000;
+    spu.regs[V_ADSR1] = 0x000f;
+    spu.regs[V_ADSR2] = 0xf000;
+    spu.regs[V_VOLL] = 0x3fff;
+    spu.regs[1 + V_VOLL] = 0x3fff; // VOLR
+    spu.regs[0x0180] = 0x3fff;
+    spu.regs[0x0182] = 0x3fff;
+    spu.write(0x01aa, 0x8000); // enabled but muted (bit14=0)
     spu.keyOn(1);
     const outL = new Float32Array(200);
     const outR = new Float32Array(200);
@@ -413,7 +413,7 @@ describe("SPU mixing", () => {
   test("tick advances one output sample per 768 CPU cycles", () => {
     const spu = new Spu();
     const voice = spu.voices[0]!;
-    spu.regs[0x80 + V_PITCH] = 0x1000;
+    spu.regs[V_PITCH] = 0x1000;
     spu.keyOn(1);
     spu.tick(768);
     expect(voice.bufIdx).toBe(1);
@@ -427,15 +427,15 @@ describe("SPU mixing", () => {
     const spu = new Spu();
     const pcm = new Array(64).fill(3584);
     spu.ram.set(encodeSimpleFilter0(pcm, 3), 0);
-    spu.regs[0x80 + V_SSA] = 0;
-    spu.regs[0x80 + V_PITCH] = 0x1000;
-    spu.regs[0x80 + V_ADSR1] = 0x000f;
-    spu.regs[0x80 + V_ADSR2] = 0x0000; // release shift 0 -> -16384/apply: near-instant release
-    spu.regs[0x80 + V_VOLL] = 0x3fff;
-    spu.regs[0x81 + V_VOLL] = 0x3fff; // VOLR
-    spu.regs[0x00d8] = 0x3fff;
-    spu.regs[0x00da] = 0x3fff;
-    spu.write(0x00aa, 0xc000);
+    spu.regs[V_SSA] = 0;
+    spu.regs[V_PITCH] = 0x1000;
+    spu.regs[V_ADSR1] = 0x000f;
+    spu.regs[V_ADSR2] = 0x0000; // release shift 0 -> -16384/apply: near-instant release
+    spu.regs[V_VOLL] = 0x3fff;
+    spu.regs[1 + V_VOLL] = 0x3fff; // VOLR
+    spu.regs[0x0180] = 0x3fff;
+    spu.regs[0x0182] = 0x3fff;
+    spu.write(0x01aa, 0xc000);
     spu.keyOn(1);
     const outL = new Float32Array(6000);
     const outR = new Float32Array(6000);
@@ -464,7 +464,7 @@ describe("SPU direct volume scaling", () => {
     spu.reset();
     expect(spu.regs[0x80]).toBe(0);
     expect(spu.ram[0]).toBe(0);
-    expect(spu.read(0x00ae) & 0x8000).toBe(0);
+    expect(spu.read(0x01ae) & 0x8000).toBe(0);
     expect(SPU_RAM_SIZE).toBe(0x80000);
   });
 });

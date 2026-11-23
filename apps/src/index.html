@@ -3,7 +3,332 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>psx-web</title>
+    <title>ePSXe</title>
+    <style>
+      :root {
+        font-family: Tahoma, "Segoe UI", Arial, sans-serif;
+        color: #111;
+        background: #ececec;
+        font-synthesis: none;
+      }
+      * { box-sizing: border-box; }
+      html, body, #root { width: 100%; height: 100%; margin: 0; overflow: hidden; }
+      body, button, input, select { font: 12px Tahoma, "Segoe UI", Arial, sans-serif; }
+      button { color: inherit; }
+
+      .epsxe-window {
+        display: flex;
+        flex-direction: column;
+        width: 100%;
+        height: 100dvh;
+        min-height: 280px;
+        overflow: hidden;
+        background: #ededed;
+      }
+      .window-titlebar {
+        flex: 0 0 27px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        border-bottom: 1px solid #999;
+        background: linear-gradient(#fafafa, #dedede);
+        font-weight: 600;
+        user-select: none;
+      }
+      .menu-bar {
+        position: relative;
+        z-index: 30;
+        flex: 0 0 27px;
+        display: flex;
+        align-items: stretch;
+        padding: 0 3px;
+        border-bottom: 1px solid #aaa;
+        background: #f0f0f0;
+        user-select: none;
+      }
+      .top-menu { position: relative; display: flex; }
+      .menu-top {
+        min-width: 49px;
+        padding: 0 10px;
+        border: 1px solid transparent;
+        background: transparent;
+        text-align: left;
+        cursor: default;
+      }
+      .menu-top:hover, .menu-top.is-open {
+        border-color: #9dbbd9;
+        background: #dce8f5;
+      }
+      .menu-top:focus-visible { outline: 1px dotted #333; outline-offset: -3px; }
+      .help-menu { margin-left: auto; }
+      .menu-popup {
+        position: absolute;
+        top: calc(100% + 1px);
+        left: 0;
+        min-width: 198px;
+        margin: 0;
+        padding: 3px;
+        list-style: none;
+        border: 1px solid #777;
+        background: #f8f8f8;
+        box-shadow: 3px 4px 10px rgb(0 0 0 / 28%);
+      }
+      .help-menu .menu-popup { right: 0; left: auto; }
+      .menu-item {
+        display: grid;
+        grid-template-columns: 20px minmax(max-content, 1fr) 14px;
+        align-items: center;
+        width: 100%;
+        min-height: 24px;
+        padding: 2px 6px 2px 2px;
+        border: 0;
+        background: transparent;
+        text-align: left;
+        white-space: nowrap;
+        cursor: default;
+      }
+      .menu-item:not(:disabled):hover,
+      .menu-item:not(:disabled):focus-visible {
+        outline: none;
+        color: #fff;
+        background: #316ac5;
+      }
+      .menu-item:disabled { color: #929292; }
+      .menu-mark { font-size: 11px; text-align: center; }
+      .submenu-arrow { justify-self: end; font-size: 8px; }
+      .menu-has-submenu { position: relative; }
+      .menu-popup.submenu { display: none; top: -4px; left: calc(100% - 2px); }
+      .menu-has-submenu:hover > .submenu,
+      .menu-has-submenu:focus-within > .submenu { display: block; }
+      .menu-separator { height: 7px; padding: 3px 4px 0; }
+      .menu-separator hr { height: 0; margin: 0; border: 0; border-top: 1px solid #c4c4c4; }
+
+      .display-area {
+        flex: 1 1 auto;
+        min-height: 0;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        padding: 14px;
+        outline: none;
+        background: #d3d3d3;
+      }
+      .display-area:focus-visible { box-shadow: inset 0 0 0 2px #316ac5; }
+      .canvas-shell {
+        position: relative;
+        width: min(640px, 100%, calc((100dvh - 106px) * 4 / 3));
+        aspect-ratio: 4 / 3;
+        overflow: hidden;
+        border: 1px solid #555;
+        background: #000;
+        box-shadow: 0 0 0 1px #f4f4f4;
+      }
+      .game-canvas {
+        display: block;
+        width: 100%;
+        height: 100%;
+        background: #000;
+        image-rendering: pixelated;
+      }
+      .display-hint {
+        position: absolute;
+        inset: 0;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        gap: 17px;
+        padding: 20px;
+        color: #d5d5d5;
+        font-size: 11px;
+        text-align: center;
+        pointer-events: none;
+      }
+      .epsxe-wordmark {
+        color: #72a5d8;
+        font-size: 54px;
+        font-style: italic;
+        font-weight: 700;
+        letter-spacing: -3px;
+        text-shadow: 2px 2px 0 #183e68;
+      }
+      .is-dragging .display-area { background: #c7d9e8; }
+      .is-dragging .canvas-shell { outline: 2px solid #316ac5; }
+      .file-input { display: none; }
+      .status-bar {
+        flex: 0 0 24px;
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) auto;
+        gap: 5px;
+        padding: 2px 4px;
+        border-top: 1px solid #a0a0a0;
+        background: #f0f0f0;
+        font-size: 11px;
+      }
+      .status-message, .status-file {
+        min-width: 0;
+        overflow: hidden;
+        padding: 1px 5px;
+        border: 1px solid;
+        border-color: #b9b9b9 #fff #fff #b9b9b9;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+      .status-file { max-width: 45vw; color: #444; }
+      .has-error { color: #a00000; }
+
+      .dialog-backdrop {
+        position: fixed;
+        z-index: 100;
+        inset: 0;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        padding: 16px;
+        background: rgb(0 0 0 / 32%);
+      }
+      .dialog-window {
+        display: flex;
+        flex-direction: column;
+        width: max-content;
+        min-width: min(460px, calc(100vw - 32px));
+        max-width: calc(100vw - 32px);
+        max-height: calc(100dvh - 32px);
+        overflow: hidden;
+        border: 1px solid #686868;
+        border-radius: 3px;
+        background: #f0f0f0;
+        box-shadow: 0 9px 28px rgb(0 0 0 / 38%);
+      }
+      .dialog-titlebar {
+        flex: 0 0 27px;
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        padding-left: 9px;
+        border-bottom: 1px solid #aaa;
+        background: linear-gradient(#fafafa, #dedede);
+        font-weight: 600;
+        user-select: none;
+      }
+      .dialog-close {
+        width: 25px;
+        height: 21px;
+        margin-right: 3px;
+        padding: 0;
+        border: 1px solid transparent;
+        background: transparent;
+        font-size: 17px;
+        line-height: 17px;
+        cursor: default;
+      }
+      .dialog-close:hover { border-color: #b56b65; background: #e6a39d; }
+      .dialog-content { flex: 1 1 auto; overflow: auto; padding: 14px 18px; }
+      .dialog-actions {
+        flex: 0 0 auto;
+        display: flex;
+        justify-content: flex-end;
+        gap: 8px;
+        padding: 8px 12px;
+        border-top: 1px solid #ccc;
+        background: #ececec;
+      }
+      .gtk-button {
+        min-width: 68px;
+        min-height: 25px;
+        padding: 2px 10px;
+        border: 1px solid #7f7f7f;
+        border-radius: 2px;
+        background: linear-gradient(#fff, #e2e2e2);
+        cursor: default;
+      }
+      .gtk-button:hover { border-color: #5d8db8; background: linear-gradient(#fff, #d8e7f6); }
+      .gtk-button:active { background: #d1e0ef; }
+      .gtk-button:focus-visible { outline: 1px dotted #222; outline-offset: -4px; }
+      .gtk-entry, .gtk-select {
+        display: block;
+        width: 100%;
+        min-width: 0;
+        height: 25px;
+        padding: 2px 5px;
+        border: 1px solid #777;
+        border-radius: 0;
+        outline: none;
+        color: #111;
+        background: #fff;
+      }
+      .gtk-entry:focus, .gtk-select:focus { border-color: #316ac5; box-shadow: 0 0 0 1px #b7d0e8; }
+      .gtk-entry[readonly] { background: #f8f8f8; }
+      input[type="checkbox"], input[type="radio"] {
+        flex: none;
+        width: 13px;
+        height: 13px;
+        margin: 0;
+        accent-color: #2c65a4;
+      }
+      .control-label { color: #222; font-size: 12px; }
+      .field-label { text-align: right; }
+      .check-label { display: inline-flex; align-items: center; gap: 6px; width: max-content; min-height: 22px; }
+      .gtk-frame { min-width: 0; margin: 0; padding: 10px 12px 12px; border: 1px solid #a5a5a5; }
+      .gtk-frame-title { padding: 0 5px; font-weight: 600; }
+      .dialog-stack { display: flex; flex-direction: column; gap: 12px; min-width: 400px; }
+      .gpu-fields { display: flex; flex-direction: column; gap: 6px; }
+      .display-mode-options { display: grid; grid-template-columns: max-content; gap: 2px; margin-bottom: 3px; }
+      .gpu-control-row {
+        display: grid;
+        grid-template-columns: 150px minmax(180px, 1fr);
+        gap: 6px;
+        align-items: center;
+      }
+      .window-size-row { grid-template-columns: 150px 56px 14px 56px; }
+      .size-entry { width: 56px; }
+      .framerate-grid { display: flex; flex-wrap: wrap; gap: 6px 18px; align-items: center; }
+      .custom-fps { margin-left: auto; }
+      .shader-row { grid-template-columns: 150px minmax(160px, 1fr) 28px; }
+      .shader-row .gtk-button { width: 28px; min-width: 28px; padding: 0; }
+
+      .gamepad-content { display: flex; flex-direction: column; gap: 12px; width: 560px; max-width: 100%; }
+      .gamepad-selectors { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+      .gamepad-bindings {
+        display: grid;
+        grid-template-columns: repeat(4, minmax(0, 1fr));
+        gap: 6px 12px;
+        padding: 12px 4px;
+        border-top: 1px solid #c4c4c4;
+        border-bottom: 1px solid #c4c4c4;
+      }
+      .binding-field { display: grid; grid-template-columns: minmax(48px, 1fr) 66px; align-items: center; gap: 4px; font-size: 11px; }
+      .binding-entry { width: 66px; text-align: center; }
+      .gamepad-footer { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+      .edit-button-label { flex: 1; color: #444; font-size: 11px; text-align: center; }
+      .gamepad-default-actions { display: flex; gap: 6px; }
+      .memcard-grid { display: flex; flex-direction: column; gap: 8px; min-width: 510px; }
+      .memcard-row {
+        display: grid;
+        grid-template-columns: 16px minmax(160px, 1fr) repeat(3, 64px);
+        gap: 8px;
+        align-items: center;
+      }
+      .memcard-row .gtk-button { min-width: 0; padding: 2px 6px; }
+      .memcard-number { font-weight: 700; text-align: center; text-decoration: underline; }
+
+      @media (max-width: 640px) {
+        .dialog-content { padding: 10px; }
+        .dialog-stack { width: calc(100vw - 54px); min-width: 0; }
+        .gpu-control-row { grid-template-columns: 125px minmax(140px, 1fr); }
+        .window-size-row { grid-template-columns: 125px 56px 14px 56px; }
+        .shader-row { grid-template-columns: 125px minmax(120px, 1fr) 28px; }
+        .gamepad-content { width: calc(100vw - 54px); }
+        .gamepad-bindings { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+        .epsxe-wordmark { font-size: 42px; }
+      }
+      @media (max-width: 480px) {
+        .status-file { display: none; }
+        .status-bar { grid-template-columns: 1fr; }
+        .display-area { padding: 7px; }
+        .custom-fps { margin-left: 0; }
+      }
+    </style>
   </head>
   <body>
     <div id="root"></div>

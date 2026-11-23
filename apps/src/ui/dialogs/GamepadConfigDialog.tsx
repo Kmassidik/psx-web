@@ -6,7 +6,7 @@
  */
 import { useState } from "react";
 import { setConfig } from "../store";
-import { Dialog, buttonClass, frameClass, frameTitleClass, labelClass, selectClass } from "./Dialog";
+import { Dialog, buttonClass, selectClass } from "./Dialog";
 
 /** liststore_padtypes rows, verbatim; index = PsxConfig PadType1/PadType2 value. */
 const PAD_TYPES = [
@@ -51,52 +51,46 @@ export function GamepadConfigDialog({ onClose }: GamepadConfigDialogProps) {
 
   return (
     <Dialog title="Config Gamepad" onClose={onClose} onOk={() => setConfig(pad)}>
-      <div className="flex flex-col gap-3">
-        <div className="flex items-center gap-2">
-          <span className={labelClass}>Pad</span>
-          <select className={selectClass} value={selected} onChange={(e) => setSelected(Number(e.target.value))}>
+      <div className="gamepad-content">
+        <div className="gamepad-selectors">
+          <select className={selectClass} aria-label="Gamepad slot" value={selected} onChange={(e) => setSelected(Number(e.target.value))}>
             {PAD_SLOTS.map((slot, i) => (
-              <option key={slot} value={i}>
-                {slot}
-              </option>
+              <option key={slot} value={i}>{slot}</option>
             ))}
           </select>
-          <span className={labelClass}>Type</span>
           <select
             className={selectClass}
+            aria-label="Gamepad type"
             value={padType}
-            onChange={(e) =>
-              selected < 4 ? setPad1(Number(e.target.value)) : setPad2(Number(e.target.value))
-            }
+            onChange={(e) => selected < 4 ? setPad1(Number(e.target.value)) : setPad2(Number(e.target.value))}
           >
-            {PAD_TYPES.map((t, i) => (
-              <option key={t} value={i}>
-                {t}
-              </option>
+            {PAD_TYPES.map((type, i) => (
+              <option key={type} value={i}>{type}</option>
             ))}
           </select>
         </div>
 
-        <fieldset className={frameClass}>
-          <legend className={frameTitleClass}>Key Bindings</legend>
-          <div className="grid grid-cols-4 gap-2">
-            {PAD_BUTTONS.map((btn) => (
-              <label key={btn} className="flex items-center justify-between gap-1 text-[12px]">
-                <span className={labelClass}>{btn}</span>
-                <input
-                  className="w-24 border border-[#2a2d31] bg-[#1b1d20] px-1.5 py-0.5 text-[12px] text-[#d6d3c8] focus:border-[#35507a] focus:outline-none"
-                  readOnly
-                  value="—"
-                  title="Binding capture lands in a later ticket"
-                />
-              </label>
-            ))}
-          </div>
-        </fieldset>
+        <div className="gamepad-bindings">
+          {PAD_BUTTONS.map((button) => (
+            <label key={button} className="binding-field">
+              <span>{button}</span>
+              <input
+                className="gtk-entry binding-entry"
+                readOnly
+                value=""
+                aria-label={`${button} binding`}
+                title="Binding capture lands in a later ticket"
+              />
+            </label>
+          ))}
+        </div>
 
-        <div className="flex justify-end gap-2">
-          <button className={buttonClass}>Clear</button>
-          <button className={buttonClass}>Default</button>
+        <div className="gamepad-footer">
+          <span className="edit-button-label">EDIT BUTTON: NONE</span>
+          <div className="gamepad-default-actions">
+            <button type="button" className={buttonClass}>Clear</button>
+            <button type="button" className={buttonClass}>Default</button>
+          </div>
         </div>
       </div>
     </Dialog>

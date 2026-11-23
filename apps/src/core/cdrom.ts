@@ -41,6 +41,9 @@ export class Cdrom {
   private errCode = 0; // last error byte (CdromGetInt5errCode latch)
   private reading = false; // ReadN/ReadS active (data INT1 stream)
   private dataPending = false; // sector latched, INT1 owed on next exec
+  private sectorProvider?: (lba: number) => Uint8Array | undefined;
+  private dataOffset = 0;
+  private sectorReady = false;
   private secondPending = false; // second response queued for next exec
   private motorOn = false;
   private shellOpen = false; // stat bit4 sticky
@@ -65,6 +68,8 @@ export class Cdrom {
     this.errCode = 0;
     this.reading = false;
     this.dataPending = false;
+    this.dataOffset = 0;
+    this.sectorReady = false;
     this.secondPending = false;
     this.motorOn = false;
     this.shellOpen = false;
@@ -125,10 +130,15 @@ export class Cdrom {
         if (this.dataPending) s |= 0x40; // DRQSTS data available
         return s;
       }
-      case 1:
-      case 2:
       case 3: {
-        // Response fifo read (mirrors at 1801/1802/1803). no$psx: after the
+        const idx = this.regs[0]! & 3;
+        if (idx === 1) return this.regs[5]!; // IFL
+        if (idx === 0) return 0;
+        return this.regs[6]!; // audio volume/apply mirror
+      }
+      case 1:
+      case 2: {
+        // Response fifo read. no$psx: after the
         // last real byte the buffer is 00h-padded to the end of 16 bytes,
         // then restarts at the first response byte.
         if (this.respFifo.length > 0) {
@@ -146,13 +156,44 @@ export class Cdrom {
     return 0; // unreachable
   }
 
+  setSectorProvider(provider: (lba: number) => Uint8Array | undefined): void {
+    this.sectorProvider = provider;
+    this.motorOn = true;
+    this.stat = (this.stat & ~0x08) | 0x02;
+  }
+
+  /** Feed the next requested sector after DMA consumed the previous one. */
+  pump(): void {
+    if (!this.reading || this.dataPending || this.sectorReady || !this.sectorProvider) return;
+    const data = this.sectorProvider(this.seekTargetLba);
+    if (!data) return;
+    this.seekTargetLba++;
+    this.setSectorData(data);
+  }
+
   /** Feed one raw 2352-byte sector (host disc-image layer). */
   setSectorData(data: Uint8Array): void {
     this.sectorBuffer.set(data.subarray(0, 2352));
     this.stat &= ~0x08; // data arriving => disc present, IdError cleared
+    this.dataOffset = 0;
+    this.sectorReady = true;
     if (this.reading && !this.dataPending) {
       this.dataPending = true; // INT1 + DRQ owed on next exec()
     }
+  }
+
+  /** Read one little-endian word from the current sector's user data. */
+  readData32(): number {
+    const start = (this.modeReg & 0x08) !== 0 ? 12 : 24;
+    const size = (this.modeReg & 0x08) !== 0 ? 2340 : 2048;
+    if (!this.sectorReady || this.dataOffset >= size) return 0;
+    const offset = start + this.dataOffset;
+    this.dataOffset += 4;
+    if (this.dataOffset >= size) this.sectorReady = false;
+    return (this.sectorBuffer[offset]! |
+      (this.sectorBuffer[offset + 1]! << 8) |
+      (this.sectorBuffer[offset + 2]! << 16) |
+      (this.sectorBuffer[offset + 3]! << 24)) >>> 0;
   }
 
   /** Explicit latch for tests / fast sector pump. */
@@ -226,8 +267,9 @@ export class Cdrom {
       }
       case 0x02: { // Setloc amm,ass,asect
         this.seekTargetMsf = [p[0] ?? 0, p[1] ?? 0, p[2] ?? 0];
+        const bcd = (value: number) => ((value >>> 4) * 10 + (value & 0x0f));
         this.seekTargetLba =
-          ((p[0] ?? 0) * 60 + (p[1] ?? 0)) * 75 + (p[2] ?? 0);
+          (bcd(p[0] ?? 0) * 60 + bcd(p[1] ?? 0)) * 75 + bcd(p[2] ?? 0);
         this.pushResponse(3, [this.stat]);
         break;
       }
@@ -372,13 +414,17 @@ export class Cdrom {
         }
         break;
       }
-      case 0x1a: { // GetID: no disc -> INT3(stat) + INT5(08h,40h,00,00,00,00,00,00)
-        const s = this.stat; // bit3 IdError set from reset
+      case 0x1a: { // GetID
+        const s = this.stat;
         this.pushResponse(3, [s]);
         this.idDone = true;
-        this.errCode = 0x40;
-        // Delay: UNVERIFIED (hardware: SCEx read attempt, ~1s).
-        this.queueSecond(5, [0x08, 0x40, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00]);
+        if (this.sectorProvider) {
+          // Licensed NTSC-U disc: stat, 00, 20, 00, "SCEA".
+          this.queueSecond(2, [s, 0x00, 0x20, 0x00, 0x53, 0x43, 0x45, 0x41]);
+        } else {
+          this.errCode = 0x40;
+          this.queueSecond(5, [0x08, 0x40, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00]);
+        }
         break;
       }
       case 0x1c: { // Reset: INT3(stat), no completion INT (SW delays 1/8s)

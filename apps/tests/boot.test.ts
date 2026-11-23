@@ -54,6 +54,146 @@ describe("Phase-1 boot: hello EXE end-to-end (loader → CPU → bus → GPU)", 
   });
 });
 
+describe("GP0 image upload", () => {
+  test("commits the final packed word and accepts the next command", () => {
+    const m = new Machine();
+    m.gpu.writeGP0(0xa000_0000);
+    m.gpu.writeGP0(0);
+    m.gpu.writeGP0((1 << 16) | 2); // 2×1 pixels = one packed word
+    m.gpu.writeGP0(0x7fff_0000);
+    expect(m.gpu.vram[0]).toBe(0);
+    expect(m.gpu.vram[1]).toBe(0x7fff);
+    m.gpu.writeGP0(0x0200_001f);
+    m.gpu.writeGP0(2);
+    m.gpu.writeGP0((1 << 16) | 1);
+    expect(m.gpu.vram[2]).toBe(0x001f);
+  });
+});
+
+describe("GP0 rectangles", () => {
+  test("flat variable-size rectangle reaches VRAM", () => {
+    const m = new Machine();
+    m.gpu.writeGP0(0x6000_00ff);
+    m.gpu.writeGP0(2);
+    m.gpu.writeGP0((2 << 16) | 2);
+    expect(m.gpu.vram[2]).toBe(0x001f);
+    expect(m.gpu.vram[3]).toBe(0x001f);
+    expect(m.gpu.vram[1024 + 2]).toBe(0x001f);
+    expect(m.gpu.vram[1024 + 3]).toBe(0x001f);
+  });
+});
+
+describe("GPU status", () => {
+  test("synchronous GPU reports command, VRAM-read, and DMA readiness", () => {
+    const m = new Machine();
+    expect(m.gpu.readGPUSTAT() & 0x1c00_0000).toBe(0x1c00_0000);
+  });
+
+  test("LW from GP1 reaches GPUSTAT through the bus", () => {
+    const m = new Machine();
+    m.cpu.reset(0);
+    m.cpu.r[1] = 0x1f80_1814;
+    m.mem.store32(0, 0x8c22_0000); // LW v0, 0(at)
+    m.cpu.step();
+    m.cpu.step();
+    expect(m.cpu.r[2]! & 0x1c00_0000).toBe(0x1c00_0000);
+  });
+});
+
+describe("DMA bus mapping", () => {
+  test("channel registers use 0x10-byte spacing", () => {
+    const m = new Machine();
+    m.portWrite(0x1f80_10c0, 0x1234_5678, 32); // channel 4 MADR
+    expect(m.dma.regs[4 * 3]).toBe(0x1234_5678);
+    expect(m.portRead(0x1f80_10c0)).toBe(0x1234_5678);
+  });
+});
+
+describe("MMIO access widths", () => {
+  test("SH reaches SPU ATTR and enables its IRQ bit", () => {
+    const m = new Machine();
+    m.cpu.reset(0);
+    m.cpu.r[1] = 0x1f80_1daa;
+    m.cpu.r[2] = 0x40;
+    m.mem.store32(0, ((0x29 << 26) | (1 << 21) | (2 << 16)) >>> 0); // SH v0, 0(at)
+    m.cpu.step();
+    expect(m.spu.read(0x1aa) & 0x40).toBe(0x40);
+  });
+});
+
+describe("Hardware interrupt delivery", () => {
+  test("masked pending IRQ enters the handler and RFE returns to EPC", () => {
+    const m = new Machine();
+    m.installHleVectors();
+    m.cpu.reset(0x8001_0000);
+    m.cpu.cp0[12] = 0x401;
+    m.irqStatus = 1 << 3;
+    m.irqMask = 1 << 3;
+    m.runSlice(4);
+    expect(m.cpu.cp0[13]! & 0x400).toBe(0x400);
+    expect(m.cpu.pc).toBe(0x8001_0000 | 0);
+  });
+
+  test("VBlank handler preserves CPU state but keeps memory side effects", () => {
+    const m = new Machine();
+    m.installHleVectors();
+    m.mem.store32(0x10000, 0x2408_0001); // ADDIU t0, zero, 1
+    m.mem.store32(0x10004, 0xac28_0000); // SW t0, 0(t1)
+    m.mem.store32(0x10008, 0x03e0_0008); // JR ra
+    m.mem.store32(0x1000c, 0);
+    m.mem.store32(0x408, 0x8001_0000);
+    m.cpu.reset(0xc0);
+    m.cpu.r[9] = 2;
+    m.cpu.r[4] = 1;
+    m.cpu.r[5] = 0x400;
+    m.cpu.r[31] = 0x200;
+    m.cpu.step();
+    m.cpu.reset(0x8003_0000);
+    m.cpu.r[1] = 0x400;
+    m.cpu.r[31] = 0x8001_2345;
+    m.cpu.run(10);
+    const expectedPc = m.cpu.pc;
+    m["runVblankHandler"]();
+    expect(m.mem.load32(0x400)).toBe(1);
+    expect(m.cpu.pc).toBe(expectedPc);
+    expect(m.cpu.r[31]).toBe(0x8001_2345 | 0);
+  });
+
+  test("custom exception hook runs after default service with CPU state preserved", () => {
+    const m = new Machine();
+    m.installHleVectors();
+    m.mem.store32(0x10000, 0x2408_0001);
+    m.mem.store32(0x10004, 0xac28_0000);
+    m.mem.store32(0x10008, 0x03e0_0008);
+    m.mem.store32(0x1000c, 0);
+    m.mem.store32(0x400, 0x8001_0000); // SaveState r31/pc
+    m.cpu.reset(0xb0);
+    m.cpu.r[9] = 0x19;
+    m.cpu.r[4] = 0x400;
+    m.cpu.r[31] = 0x200;
+    m.cpu.step();
+    m.cpu.reset(0x8003_0000);
+    m.cpu.r[1] = 0x500;
+    m.cpu.r[31] = 0x8001_2345;
+    m.cpu.cp0[12] = 0x401;
+    m.irqStatus = m.irqMask = 1 << 3;
+    m.runSlice(4);
+    expect(m.mem.load32(0x500)).toBe(1);
+    expect(m.cpu.pc).toBe(0x8003_0000 | 0);
+    expect(m.cpu.r[31]).toBe(0x8001_2345 | 0);
+  });
+
+  test("BIOS CDROM service acknowledges controller and I_STAT", () => {
+    const m = new Machine();
+    m.irqStatus = 1 << 2;
+    m.irqMask = 1 << 2;
+    m.cdrom.regs[5] = 3;
+    m.runSlice(1);
+    expect(m.irqStatus & (1 << 2)).toBe(0);
+    expect(m.cdrom.regs[5]).toBe(0);
+  });
+});
+
 describe("Machine snapshot → restore equivalence (zsave/zload spec)", () => {
   test("snapshot → restore → continue == uninterrupted run", () => {
     const { bytes } = buildHelloExe(0x7c1f);

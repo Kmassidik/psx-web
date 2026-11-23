@@ -36,7 +36,7 @@ const SLTU = (rd: number, rs: number, rt: number) => R(0x2b, rs, rt, rd);
 const SLTI = (rt: number, rs: number, imm: number) => I(0x0a, rs, rt, imm);
 const SLTIU = (rt: number, rs: number, imm: number) => I(0x0b, rs, rt, imm);
 const LW = (rt: number, rs: number, imm: number) => I(0x23, rs, rt, imm);
-const SW = (rt: number, rs: number, imm: number) => I(0x2a, rs, rt, imm); // 0x2b is SWL!
+const SW = (rt: number, rs: number, imm: number) => I(0x2b, rs, rt, imm);
 const BEQ = (rs: number, rt: number, off: number) => I(0x04, rs, rt, off);
 const BNE = (rs: number, rt: number, off: number) => I(0x05, rs, rt, off);
 const BLTZ = (rs: number, off: number) => I(0x01, rs, 0x00, off);

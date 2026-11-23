@@ -142,6 +142,15 @@ describe("Loads/stores incl. unaligned ops", () => {
     expect(cpu.r[5]).toBe(0x80ff);
   });
 
+  test("SW stores all 32 bits (opcode 2B, not SWL 2A)", () => {
+    const cpu = boot();
+    cpu.r[1] = 0x400;
+    cpu.r[2] = 0x8000_0068 | 0;
+    cpu.mem.store32(0, I(0x2b, 1, 2, 0));
+    expect(cpu.step()).toBe(true);
+    expect(cpu.mem.load32(0x400)).toBe(0x8000_0068);
+  });
+
   test("LWL/LWR/SWL/SWR exhaustive: all 4 offsets × 3 patterns = LW/SW pair", () => {
     const rnd = prng(77);
     for (let off = 0; off < 4; off++) {
@@ -167,7 +176,7 @@ describe("Loads/stores incl. unaligned ops", () => {
         cpu2.mem.store32(0, LUI(1, 0)); cpu2.mem.store32(4, ORI(1, 1, 0x300));
         cpu2.mem.store32(8, LUI(2, (swVal >>> 16) & 0xffff)); cpu2.mem.store32(12, ORI(2, 2, swVal & 0xffff));
         cpu2.mem.store32(16, I(0x2e, 1, 2, off));         // SWR r2, off(r1) — LE pair:
-        cpu2.mem.store32(20, I(0x2b, 1, 2, off + 3));     // SWR@A then SWL@A+3
+        cpu2.mem.store32(20, I(0x2a, 1, 2, off + 3));     // SWR@A then SWL@A+3
         for (let i = 0; i < 7; i++) cpu2.step();
         const got = cpu2.mem.load32(0x300 & ~3);
         const alignedLo = (0x300 & ~3);
@@ -234,6 +243,18 @@ describe("Branch/jump delay slots", () => {
     expect(cpu.r[6]).toBe(1);
   });
 
+  test("J/JAL preserve all 26 target bits", () => {
+    const target = 0x0007_c234;
+    for (const op of [0x02, 0x03]) {
+      const cpu = boot();
+      cpu.mem.store32(0x00, ((op << 26) | (target >>> 2)) >>> 0);
+      cpu.mem.store32(0x04, 0); // delay slot
+      cpu.step();
+      cpu.step();
+      expect(cpu.pc).toBe(target);
+    }
+  });
+
   test("load-delay: LW value visible to following instruction, not LW itself", () => {
     const cpu = boot();
     cpu.mem.store32(0x400, 0x1234_5678);
@@ -243,6 +264,64 @@ describe("Branch/jump delay slots", () => {
     cpu.mem.store32(0x10, ADDIU(3, 2, 1));    // r3 = r2+1 sees value
     for (let i = 0; i < 5; i++) cpu.step();
     expect(cpu.r[3]).toBe((0x1234_5678 | 0) + 1);
+  });
+});
+
+describe("HI/LO register transfers", () => {
+  test("MFLO reads LO and MTHI writes HI", () => {
+    const cpu = boot();
+    cpu.lo = 0x5566_7788;
+    cpu.hi = 0x1122_3344;
+    cpu.mem.store32(0, R(0x12, 0, 0, 2)); // MFLO r2
+    cpu.mem.store32(4, R(0x11, 2));       // MTHI r2
+    cpu.mem.store32(8, R(0x10, 0, 0, 3)); // MFHI r3
+    for (let i = 0; i < 3; i++) cpu.step();
+    expect(cpu.r[2]).toBe(0x5566_7788);
+    expect(cpu.r[3]).toBe(0x5566_7788);
+    expect(cpu.hi).toBe(0x5566_7788);
+  });
+});
+
+describe("BIOS HLE calls", () => {
+  test("SYSCALL writes its result to v0 and returns to ra", () => {
+    const mem = new Memory();
+    const cpu = new Cpu(mem, new Rcnt(), gteStub, noPorts, (table, fn) => {
+      expect(table).toBe(0xb0);
+      expect(fn).toBe(0);
+      return 0x1234_5678;
+    });
+    cpu.reset(0xb0);
+    cpu.r[9] = 0;
+    cpu.r[31] = 0x80;
+    mem.store32(0xb0, 0x0000_000c);
+    expect(cpu.step()).toBe(true);
+    expect(cpu.r[2]).toBe(0x1234_5678);
+    expect(cpu.pc).toBe(0x80);
+    expect(cpu.nextPc).toBe(0x84);
+  });
+
+  test("critical-section SYS calls update interrupt enable and mask bits", () => {
+    const cpu = boot();
+    cpu.r[4] = 2;
+    cpu.mem.store32(0, 0x0000_000c);
+    cpu.mem.store32(4, 0x0000_000c);
+    cpu.step();
+    expect(cpu.cp0[12]).toBe(0x405);
+    cpu.r[4] = 1;
+    cpu.step();
+    expect(cpu.r[2]).toBe(1);
+    expect(cpu.cp0[12]).toBe(1);
+  });
+
+  test("non-vector SYSCALL raises an exception instead of using HLE", () => {
+    let calls = 0;
+    const mem = new Memory();
+    const cpu = new Cpu(mem, new Rcnt(), gteStub, noPorts, () => { calls++; return 1; });
+    cpu.reset(0x200);
+    mem.store32(0x200, 0x0000_000c);
+    expect(cpu.step()).toBe(true);
+    expect(calls).toBe(0);
+    expect(cpu.cp0[13]! >> 2).toBe(8);
   });
 });
 
@@ -270,7 +349,7 @@ describe("Determinism properties", () => {
       cpu.mem.store32(0x04, ADDIU(5, 0, 7));
       cpu.mem.store32(0x08, R(0x18, 4, 5, 0));  // MULT
       cpu.mem.store32(0x0c, R(0x10, 0, 0, 6));  // MFHI r6
-      cpu.mem.store32(0x10, R(0x11, 0, 0, 7));  // MFLO r7
+      cpu.mem.store32(0x10, R(0x12, 0, 0, 7));  // MFLO r7
       return cpu;
     };
     const a = make();

@@ -11,8 +11,11 @@ const result = await Bun.build({
   sourcemap: "inline",
 });
 
+const port = Number(Bun.env.PORT ?? 5173);
+
 serve({
-  port: 5173,
+  hostname: "0.0.0.0",
+  port,
   async fetch(req) {
     const url = new URL(req.url);
     if (url.pathname === "/" || url.pathname === "/index.html") {
@@ -24,4 +27,4 @@ serve({
     return new Response("not found", { status: 404 });
   },
 });
-console.log("psx-web dev server → http://localhost:5173");
+console.log(`psx-web dev server → http://localhost:${port}`);

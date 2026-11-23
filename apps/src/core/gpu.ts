@@ -45,9 +45,16 @@ export class Gpu {
         this.cmdWords = [w]; this.cmdLeft = 2; break;
       case 0xc0: // Store image
         this.cmdWords = [w]; this.cmdLeft = 2; break;
+      case 0xe1: this.texPage = w & 0xffff; break; // draw mode / texture page
       case 0x01: this.cmdWords = []; break; // clear cache: no-op
       default:
-        if ((top & 0xe0) === 0x20 || (top & 0xe0) === 0x30) {
+        if ((top & 0xe0) === 0x60) {
+          const textured = (top & 0x04) !== 0;
+          const variableSize = ((top >>> 3) & 3) === 0;
+          const total = 2 + (textured ? 1 : 0) + (variableSize ? 1 : 0);
+          this.cmdWords = [w];
+          this.cmdLeft = total - 1;
+        } else if ((top & 0xe0) === 0x20 || (top & 0xe0) === 0x30) {
           // Polygons 20h..3Fh: decode expected total words (no$psx).
           const quad = (top & 0x08) !== 0; // bit3: 0=tri 1=quad
           const textured = (top & 0x04) !== 0; // bit2
@@ -67,6 +74,11 @@ export class Gpu {
   }
 
   private gp0Param(w: number): void {
+    if ((this.gp0Mode & 0xe0) === 0x60) {
+      this.cmdWords.push(w);
+      if (--this.cmdLeft === 0) this.rasterizeRect(this.cmdWords);
+      return;
+    }
     switch (this.gp0Mode) {
       case 0x02: {
         this.cmdWords.push(w);
@@ -83,15 +95,14 @@ export class Gpu {
       }
       case 0xa0: {
         this.cmdWords.push(w);
-        if (this.cmdLeft === 2 && this.cmdWords.length === 3) {
+        if (this.cmdWords.length === 3) {
           const x = this.cmdWords[1]! & 0x3ff, y = this.cmdWords[1]! >>> 16 & 0x1ff;
           const wd = this.cmdWords[2]! & 0x3ff, ht = this.cmdWords[2]! >>> 16 & 0x1ff;
           this.imgX = x; this.imgY = y; this.imgW = wd; this.imgH = ht; this.imgCur = 0;
-          this.cmdLeft = 1 + Math.ceil((wd * ht) / 2);
-        } else if (--this.cmdLeft === 0) {
-          // last data word(s) — handled per-word below via pushImageWord
+          this.cmdLeft = Math.ceil((wd * ht) / 2);
         } else {
           this.pushImageWord(w);
+          this.cmdLeft--;
         }
         break;
       }
@@ -104,6 +115,50 @@ export class Gpu {
         }
         break;
     }
+  }
+
+  private rasterizeRect(words: number[]): void {
+    const op = words[0]!;
+    const top = (op >>> 24) & 0xff;
+    const textured = (top & 0x04) !== 0;
+    const sizeCode = (top >>> 3) & 3;
+    const pos = words[1]!;
+    const x = (pos & 0xffff) << 16 >> 16;
+    const y = (pos >>> 16) << 16 >> 16;
+    let wi = 2;
+    let u = 0, v = 0;
+    if (textured) {
+      const texWord = words[wi++]!;
+      u = texWord & 0xff;
+      v = (texWord >>> 8) & 0xff;
+      this.clutBase = ((texWord >>> 16) & 0xffff) * 16;
+    }
+    let width = 1, height = 1;
+    if (sizeCode === 0) {
+      const size = words[wi]!;
+      width = size & 0x3ff;
+      height = (size >>> 16) & 0x1ff;
+    } else {
+      width = height = sizeCode === 2 ? 8 : sizeCode === 3 ? 16 : 1;
+    }
+    const r = op & 0xff, g = (op >>> 8) & 0xff, b = (op >>> 16) & 0xff;
+    const vertex = (vx: number, vy: number, vu: number, vv: number) => ({ x: vx, y: vy, r, g, b, u: vu, v: vv });
+    rasterize(this, {
+      kind: "quad",
+      vertices: [
+        vertex(x, y, u, v),
+        vertex(x + width, y, u + width, v),
+        vertex(x, y + height, u, v + height),
+        vertex(x + width, y + height, u + width, v + height),
+      ],
+      colorMode: "flat",
+      textured,
+      blendMode: 0,
+      texPage: this.texPage,
+      clutBase: this.clutBase,
+      dither: false,
+      semiTrans: (top & 0x02) !== 0,
+    });
   }
 
   /** Decode accumulated GP0 polygon words → Prim → rasterize into VRAM. */
@@ -129,9 +184,9 @@ export class Gpu {
         u = texWord & 0xff;
         v = (texWord >>> 8) & 0xff;
         if (i === 0) {
-          // clut base + texpage from the first texword
           this.clutBase = ((texWord >>> 16) & 0xffff) * 16;
-          this.texPage = ((texWord >>> 24) & 0x1f) | (op >>> 0); // mode bits from op handled below
+        } else if (i === 1) {
+          this.texPage = (texWord >>> 16) & 0xffff;
         }
       }
       verts.push({
@@ -189,7 +244,7 @@ export class Gpu {
   }
 
   readGPUSTAT(): number {
-    return 0x1000_0000 | (this.dispEnable ? 0x0080_0000 : 0);
+    return 0x1c00_0000 | (this.dispEnable ? 0x0080_0000 : 0);
   }
 
   /** Convert current display area to RGBA for the canvas (per-frame, once). */

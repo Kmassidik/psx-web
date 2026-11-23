@@ -333,3 +333,30 @@ describe("CDROM error / latch behavior", () => {
     expect(c.sectorBuffer.every((b) => b === 0)).toBe(true);
   });
 });
+
+describe("CDROM register 3 interrupt flags", () => {
+  test("index 1 returns IFL instead of popping response data", () => {
+    const { c } = make();
+    c.write(0, 1);
+    c.write(1, 0x01);
+    expect(c.read(3) & 7).toBe(3);
+    c.ack(7);
+    expect(c.read(3) & 7).toBe(0);
+  });
+});
+
+describe("CDROM sector data DMA", () => {
+  test("readData32 streams exactly 2048 user bytes", () => {
+    const c = new Cdrom();
+    const sector = new Uint8Array(2352);
+    sector[24] = 0x78;
+    sector[25] = 0x56;
+    sector[26] = 0x34;
+    sector[27] = 0x12;
+    sector[24 + 2044] = 0xaa;
+    c.setSectorData(sector);
+    expect(c.readData32()).toBe(0x1234_5678);
+    for (let i = 1; i < 512; i++) c.readData32();
+    expect(c.readData32()).toBe(0);
+  });
+});
