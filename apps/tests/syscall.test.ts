@@ -98,6 +98,18 @@ describe("BIOS-free kernel services", () => {
     expect(m.rcnt.regs[3]).toBe(0);
   });
 
+  test("cache, console write, CD cleanup, and RCNT clear services return documented results", () => {
+    const m = new Machine();
+    m.installHleVectors();
+    expect(call(m, 0xa0, 0x44)).toBe(0);
+    expect(call(m, 0xa0, 0x72)).toBe(0);
+    expect(call(m, 0xb0, 0x35, 1, 0x8001_0000, 16)).toBe(16);
+    expect(call(m, 0xb0, 0x35, 3, 0x8001_0000, 16)).toBe(-1);
+    m.irqStatus = 0x10;
+    expect(call(m, 0xc0, 0x0a, 0, 0)).toBe(0);
+    expect(m.irqStatus & 0x10).toBe(0);
+  });
+
   test("legacy pad reads active-low X and direction buttons", () => {
     const m = new Machine();
     m.installHleVectors();

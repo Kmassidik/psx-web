@@ -124,6 +124,14 @@ export class BiosKernel {
 
   private cCall(fn: number): number {
     if (fn === 0x08 || fn === 0x09) return 0;
+    if (fn === 0x0a) { // ChangeClearRCnt(t, clear)
+      const timer = this.cpu.r[4]!;
+      if (this.cpu.r[5]! === 0 && timer <= 3) {
+        const bit = timer === 3 ? 0 : timer + 4;
+        this.cpu.ports.write32(0x1f80_1070, ~(1 << bit), 32);
+      }
+      return 0;
+    }
     if (fn === 0x02) {
       this.interruptHandlers.unshift({
         priority: this.cpu.r[4]!,
@@ -184,6 +192,9 @@ export class BiosKernel {
       case 0x39: // InitHeap(addr, size)
         this.state.heapNext = this.cpu.r[4]!;
         return 0;
+      case 0x44: // FlushCache
+        this.cpu.flushDynarec();
+        return 0;
       case 0x49: // GPU_cw(gp0cmd)
         this.gpu.writeGP0(this.cpu.r[4]!);
         return 0;
@@ -209,6 +220,8 @@ export class BiosKernel {
       }
       case 0x32: // FileOpen — full filesystem delivery is not implemented
         return 0xdead_0001;
+      case 0x72: // _96_remove
+        return 0;
       default:
         return 1;
     }
@@ -319,6 +332,11 @@ export class BiosKernel {
       }
       case 0x32: // FileOpen — full filesystem delivery is not implemented
         return 0xdead_0001;
+      case 0x35: { // write(fd, buf, count): host console output is discarded
+        const fd = this.cpu.r[4]!;
+        const count = this.cpu.r[6]!;
+        return fd === 1 || fd === 2 ? count : -1;
+      }
       case 0x56: // GetC0Table
         return 0x8000_2000;
       case 0x57: // GetB0Table
