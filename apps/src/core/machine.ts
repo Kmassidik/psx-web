@@ -354,6 +354,9 @@ export class Machine {
   }
 
   private vblankAcc = 0;
+  private lastPad1 = 0xffff;
+  private lastPad2 = 0xffff;
+  private padInputDirty = false;
   private spuDmaDone = false; // retained in the versioned save-state layout
   private audioSink: SpuAudioSink | null = null;
   private audioLeft = new Float32Array(0);
@@ -366,6 +369,10 @@ export class Machine {
   /** Run up to n CPU instructions with DMA/CDROM/SPU/rcnt service per slice. */
   runSlice(n: number): boolean {
     const pendingIrq = this.irqStatus & this.irqMask;
+    const padChanged = this.pads.pad1 !== this.lastPad1 || this.pads.pad2 !== this.lastPad2;
+    if (padChanged) this.padInputDirty = true;
+    this.lastPad1 = this.pads.pad1;
+    this.lastPad2 = this.pads.pad2;
     const deliverException = pendingIrq !== 0 && (this.cpu.cp0[12]! & 0x401) === 0x401;
     if (deliverException) {
       this.cpu.exception(0, 0x400);
@@ -375,8 +382,10 @@ export class Machine {
     const ok = this.cpu.run(n);
     this.joypad.tick(n);
     if (deliverException) {
-      if ((pendingIrq & IRQ_VBLANK) !== 0 && (pendingIrq & (IRQ_CDROM | IRQ_DMA)) === 0) this.runInterruptChain();
-      else this.runHandler(this.kernel.interruptHandler(0), "vblank");
+      if ((pendingIrq & IRQ_VBLANK) !== 0 && (this.padInputDirty || (pendingIrq & (IRQ_CDROM | IRQ_DMA)) === 0)) {
+        this.padInputDirty = false;
+        this.runInterruptChain();
+      } else this.runHandler(this.kernel.interruptHandler(0), "vblank");
       this.runHandler(this.kernel.exceptionHook(), "exception");
     }
     this.runDma();

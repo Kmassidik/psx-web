@@ -357,13 +357,13 @@ export class Cpu {
       case 0x31: return this.load(rt, this.addr(rs, simm), 16, false); // LWC1 skipped: not present
       case 0x32: { // LWC2 → GTE data reg
         const a = this.addr(rs, simm);
-        this.gte.mtc2(rt & 15, this.mem.load32(a));
+        this.gte.mtc2(rt & 31, this.mem.load32(a));
         return true;
       }
       case 0x38: return this.store(rt, this.addr(rs, simm), 32); // SC (unip: rt=1)
       case 0x3a: { // SWC2 → GTE data reg
         const a = this.addr(rs, simm);
-        this.mem.store32(a, this.gte.mfc2(rt & 15));
+        this.mem.store32(a, this.gte.mfc2(rt & 31));
         this.invalidateCode(a, a + 4);
         return true;
       }

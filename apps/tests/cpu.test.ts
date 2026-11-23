@@ -66,6 +66,28 @@ describe("COP2 register transfers", () => {
   });
 });
 
+describe("COP2 memory transfers", () => {
+  test("LWC2 and SWC2 access all 32 GTE data registers", () => {
+    const mem = new Memory();
+    const gte = new GTE();
+    const cpu = new Cpu(mem, new Rcnt(), {
+      execute: (instr) => gte.execute(instr),
+      mfc2: (r) => gte.dr[r & 31]!,
+      mtc2: (r, v) => { gte.dr[r & 31] = v | 0; },
+      cr: gte.cr,
+    }, noPorts);
+    mem.store32(0, 0xc834_0000);
+    mem.store32(4, 0xe834_0000);
+    mem.store32(0x1000, 0xabcd);
+    cpu.reset(0);
+    cpu.r[1] = 0x1000;
+    cpu.step();
+    expect(gte.dr[20]).toBe(0xabcd);
+    cpu.step();
+    expect(mem.load32(0x1000)).toBe(0xabcd);
+  });
+});
+
 describe("CP0 exception status stack", () => {
   test("delay-slot state is cleared after the slot and preserved for exceptions", () => {
     const cpu = boot();
