@@ -55,6 +55,17 @@ describe("Phase-1 boot: hello EXE end-to-end (loader → CPU → bus → GPU)", 
   });
 });
 
+describe("BIOS executable handoff", () => {
+  test("loading an EXE leaves display output enabled", () => {
+    const { bytes } = buildHelloExe(0x03e0);
+    const exe = parsePsExe(bytes);
+    const m = new Machine();
+    m.gpu.writeGP1(0x0300_0001);
+    m.loadExe(bytes, exe.pc0, exe.t_addr, exe.data);
+    expect(m.gpu.display.enabled).toBe(true);
+  });
+});
+
 describe("GP0 image upload", () => {
   test("commits the final packed word and accepts the next command", () => {
     const m = new Machine();

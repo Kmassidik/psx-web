@@ -376,6 +376,7 @@ export class Machine {
     this.mem.ram.set(data, tAddr);
     this.installHleVectors(); // BIOS-free boot: A/B/C call vectors
     this.cpu.reset(pc0);
+    this.gpu.writeGP1(0x0300_0000); // BIOS hands control with display output enabled
     // crt0 register state the BIOS normally sets before _start.
     const header = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
     const initialGp = header.getUint32(0x14, true);
