@@ -62,6 +62,8 @@ export class Dma {
   dicr = 0;
   /** Called on IRQ assert (line 3) when a completed channel is enabled. */
   raiseIrq: (line: number) => void = () => {};
+  /** Called once for every completed DMA channel, including repeated transfers. */
+  onComplete: (channel: number) => void = () => {};
 
   /** Mark a channel's transfer pending (CHCR START), as a ctrl write would. */
   request(channel: number): void {
@@ -84,6 +86,7 @@ export class Dma {
       else this.runBlock(ch, bus);
       this.regs[ch * 3 + 2] = ctrl & ~CHCR_START;
       this.dicr |= 1 << ch;
+      this.onComplete(ch);
       this.updateIrq();
     }
   }

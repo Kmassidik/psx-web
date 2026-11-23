@@ -83,6 +83,9 @@ export class Machine {
       write32: (va, v, width) => this.portWrite(va, v, width),
     }, (table, fn) => this.kernel.call(table, fn));
     this.kernel = new BiosKernel(this.cpu, this.gpu, this.pads);
+    this.dma.onComplete = (channel) => {
+      if (channel === 2) this.kernel.deliver(0xf000_0009, 0x20);
+    };
   }
 
   /** DmaBus adapter: DMA reads/writes RAM words and drives GP0. */
@@ -312,7 +315,6 @@ export class Machine {
   }
 
   private vblankAcc = 0;
-  private gpuDmaDone = false;
   private audioSink: SpuAudioSink | null = null;
   private audioLeft = new Float32Array(0);
   private audioRight = new Float32Array(0);
@@ -335,9 +337,6 @@ export class Machine {
       this.runHandler(this.kernel.exceptionHook(), "exception");
     }
     this.runDma();
-    const gpuComplete = (this.dma.dicr & (1 << 2)) !== 0;
-    if (gpuComplete && !this.gpuDmaDone) this.kernel.deliver(0xf000_0009, 0x20);
-    this.gpuDmaDone = gpuComplete;
     this.runEventCallbacks();
     this.cdrom.pump();
     this.cdrom.exec(); // one interrupt-bucket per slice (timing: see cdrom.ts)

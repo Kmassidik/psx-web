@@ -1,6 +1,14 @@
 import { describe, expect, test } from "bun:test";
 import { Machine } from "../src/core/machine";
 
+function completeGpuDma(m: Machine): void {
+  m.dma.dpcr = 0x800;
+  m.dma.regs[6] = 0x1000;
+  m.dma.regs[7] = 1;
+  m.dma.regs[8] = 0x0100_0001;
+  m.dma.request(2);
+}
+
 function call(m: Machine, table: number, fn: number, arg = 0, arg2 = 0, arg3 = 0, arg4 = 0): number {
   m.cpu.reset(table);
   m.cpu.r[9] = fn;
@@ -103,7 +111,7 @@ describe("BIOS-free kernel services", () => {
     m.installHleVectors();
     const event = call(m, 0xb0, 0x08, 0xf000_0009, 0x20, 0x2000, 0);
     call(m, 0xb0, 0x0c, event);
-    m.dma.dicr = 1 << 2;
+    completeGpuDma(m);
     m.runSlice(1);
     expect(call(m, 0xb0, 0x0b, event)).toBe(1);
   });
@@ -168,7 +176,7 @@ describe("BIOS-free kernel services", () => {
     const event = call(m, 0xb0, 0x08, 0xf000_0009, 0x20, 0x1000, 0x8001_0000);
     call(m, 0xb0, 0x0c, event);
     m.cpu.r[1] = 0x500;
-    m.dma.dicr = 1 << 2;
+    completeGpuDma(m);
     m.runSlice(1);
     m["runEventCallbacks"]();
     expect(m.mem.load32(0x500)).toBe(1);
@@ -182,7 +190,7 @@ describe("BIOS-free kernel services", () => {
     expect(event).toBe(0xf100_0005 | 0);
     expect(call(m, 0xb0, 0x0b, event)).toBe(0);
     call(m, 0xb0, 0x0c, event);
-    m.dma.dicr = 1 << 2;
+    completeGpuDma(m);
     m.runSlice(1);
     expect(call(m, 0xb0, 0x0b, event)).toBe(1);
     expect(call(m, 0xb0, 0x0b, event)).toBe(0);
