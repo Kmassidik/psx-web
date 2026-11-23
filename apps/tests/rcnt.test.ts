@@ -31,6 +31,14 @@ describe("Root counters (rcnt_update contract)", () => {
     expect(r.regs[0]).toBe(2); // 7-5 wrapped
   });
 
+  test("timer 1 HBlank gate advances without a zero-step infinite loop", () => {
+    const r = new Rcnt();
+    r.regs[3] = 10;
+    r.regs[4] = 0x0100; // gate mode 1
+    r.tick(20_000);
+    expect(r.regs[3]).toBe(20_010);
+  });
+
   test("no IRQ without mode bit8 even past target", () => {
     const r = new Rcnt();
     let fired = 0;

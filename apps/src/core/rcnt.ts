@@ -17,7 +17,7 @@ export class Rcnt {
       const target = this.regs[t * 3 + 2]!;
       const gate = (mode >>> 8) & 3;
       let step = 1;
-      if (t === 1 && gate !== 0) step = gate === 1 ? 0 : 1; // hblank gating t1
+      if (t === 1 && gate !== 0) step = 1; // HBlank gating is approximated active; never use a zero step
       if (t === 2 && gate !== 0) step = 1;
       let v = this.regs[t * 3]!;
       let done = false;

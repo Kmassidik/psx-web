@@ -60,13 +60,26 @@ const provider = (lba: number) => {
 const machine = new Machine();
 if (args.includes("--dynarec")) machine.setDynarecEnabled(true);
 machine.setSectorProvider(provider);
+const hex = (value: number, width = 8) => (value >>> 0).toString(16).padStart(width, "0");
+if (args.includes("--handler-trace")) {
+  const runHandler = machine["runHandler"].bind(machine);
+  machine["runHandler"] = (entry: number) => {
+    console.log(`handler enter ${hex(entry)} cycles=${machine.cpu.cycles}`);
+    runHandler(entry);
+    console.log(`handler exit ${hex(entry)} cycles=${machine.cpu.cycles} truncations=${machine.diagnostics.handlerTruncations}`);
+  };
+}
 
 const frontendBytes = readIsoFile(provider, "cdrom:\\FE.EXE;1");
 if (!frontendBytes) throw new Error("No FE.EXE;1 found");
 const frontend = parsePsExe(frontendBytes);
 machine.loadExe(frontendBytes, frontend.pc0, frontend.t_addr, frontend.data);
-for (let i = 0; i < 300; i++) machine.runSlice(20_000);
+for (let i = 0; i < 300; i++) {
+  machine.runSlice(20_000);
+  console.log(`front-end ${i + 1}/300 pc=${hex(machine.cpu.pc)} cycles=${machine.cpu.cycles} truncations=${machine.diagnostics.handlerTruncations}`);
+}
 console.log(`front-end complete pc=${hex(machine.cpu.pc)} cycles=${machine.cpu.cycles} truncations=${machine.diagnostics.handlerTruncations}`);
+if (args.includes("--frontend-only")) process.exit(0);
 const gameBytes = readIsoFile(provider, "cdrom:\\GAME.EXE;1");
 if (!gameBytes) throw new Error("No GAME.EXE;1 found");
 const game = parsePsExe(gameBytes);
@@ -102,7 +115,6 @@ if (trace) {
   };
 }
 
-const hex = (value: number, width = 8) => (value >>> 0).toString(16).padStart(width, "0");
 function nonBlackPixels(): number {
   machine.gpu.composeFrame();
   let count = 0;
