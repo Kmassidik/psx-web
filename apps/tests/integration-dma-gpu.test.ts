@@ -31,6 +31,8 @@ describe("DMA→GPU linked-list integration", () => {
     expect(m.gpu.vram[512 * 1024 - 1]).toBe(0x03e0);
     // Channel flags latch only when both interrupt enables were set at completion.
     expect(m.irqStatus & (1 << 3)).not.toBe(0);
+    m["portWrite"](0x1f80_10f4, 1 << 26, 32);
+    expect(m.irqStatus & (1 << 3)).toBe(0);
   });
 
   test("DMA start bit cleared after completion", () => {

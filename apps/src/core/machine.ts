@@ -185,7 +185,11 @@ export class Machine {
         }
         if (va >= 0x1f80_1080 && va <= 0x1f80_10f7) {
           if (va === 0x1f80_10f0) { this.dma.dpcr = v >>> 0; return true; }
-          if (va === 0x1f80_10f4) { this.dma.writeDicr(v >>> 0); return true; }
+          if (va === 0x1f80_10f4) {
+            this.dma.writeDicr(v >>> 0);
+            if ((this.dma.dicr & 0x8000_0000) === 0) this.irqStatus &= ~IRQ_DMA;
+            return true;
+          }
           const ch = ((va - 0x1f80_1080) / 16) | 0;
           const off = va - 0x1f80_1080 - ch * 16;
           if (ch < 7 && off % 4 === 0 && off < 12) {
@@ -371,7 +375,7 @@ export class Machine {
     const ok = this.cpu.run(n);
     this.joypad.tick(n);
     if (deliverException) {
-      if ((pendingIrq & IRQ_VBLANK) !== 0 && (pendingIrq & (IRQ_CDROM | IRQ_DMA)) === 0 && !this.cdrom.isReading) this.runInterruptChain();
+      if ((pendingIrq & IRQ_VBLANK) !== 0 && (pendingIrq & (IRQ_CDROM | IRQ_DMA)) === 0) this.runInterruptChain();
       else this.runHandler(this.kernel.interruptHandler(0), "vblank");
       this.runHandler(this.kernel.exceptionHook(), "exception");
     }
