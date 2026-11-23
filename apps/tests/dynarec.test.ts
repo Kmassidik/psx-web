@@ -11,6 +11,8 @@ import { Memory } from "../src/core/memory";
 import { Cpu } from "../src/core/cpu";
 import { Rcnt } from "../src/core/rcnt";
 import { Machine } from "../src/core/machine";
+import { buildHelloExe, HELLO_PC } from "../src/core/hello-exe";
+import { parsePsExe } from "../src/core/loader/psexe";
 import { Dynarec, type CpuState } from "../src/core/dynarec/blocks";
 import { translateBlock, BLOCK_MAX } from "../src/core/dynarec/translator";
 
@@ -484,6 +486,21 @@ describe("Cpu.run dynarec integration", () => {
     expect(cpu.r[2]).toBe(0x99);
     expect(cpu.pc).toBe(0x200);
     expect(cpu.cycles).toBe(1);
+  });
+
+  test("hello J-self remains parked across slice delay-slot boundaries", () => {
+    const { bytes } = buildHelloExe();
+    const exe = parsePsExe(bytes);
+    const machine = new Machine();
+    machine.loadExe(bytes, exe.pc0, exe.t_addr, exe.data);
+    machine.setDynarecEnabled(true);
+    const loop = HELLO_PC + 9 * 4;
+    for (let slice = 0; slice < 100; slice++) {
+      expect(machine.runSlice(1000)).toBe(true);
+      const pc = machine.cpu.pc >>> 0;
+      expect(pc === loop || pc === loop + 4).toBe(true);
+    }
+    expect(machine.gpu.vram[0]).toBe(0x03e0);
   });
 
   test("Machine state roundtrip retains a block-ending load delay", () => {

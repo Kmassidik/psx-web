@@ -20,8 +20,8 @@
  * Delay slot: a branch/jump consumes the NEXT fetch as its delay slot and the
  * block exits after it. PS1 load delay (one slot) is reproduced exactly: a
  * load's value lands in the target register at the top of the NEXT emitted
- * instruction (interpreter step() order), or in the exit sync if the load was
- * the block's last instruction.
+ * instruction (interpreter step() order), or exported as a pending slot if the
+ * load was the block's last instruction.
  *
  * Exit convention: control flow converges on one epilogue via a local
  * holding the runtime exit pc (fall-through constant patched inside the
@@ -178,20 +178,20 @@ class Translator {
             regGet(this, rt); regGet(this, rs); this.const32(31); this.code.push(OP.I32_AND, OP.I32_SHR_S);
             this.setGPR(rd);
             return "simple";
-          case 0x08: // JR — delay-slot prologue advances these shadows by 4
-            regGet(this, rs); this.const32(-4); this.code.push(OP.I32_ADD);
-            regSet(this, L_EXITPC);
+          case 0x08: // JR — exit pc = r[rs] after the delay slot
             regGet(this, rs);
+            regSet(this, L_EXITPC);
+            regGet(this, rs); this.const32(4); this.code.push(OP.I32_ADD);
             regSet(this, L_NEXTPC);
             this.transfer = true;
             return "branch";
-          case 0x09: { // JALR — link = instr addr + 8, exit pc = r[rs]
+          case 0x09: { // JALR — read the target before writing rd (rs may equal rd)
+            regGet(this, rs);
+            regSet(this, L_EXITPC);
+            regGet(this, rs); this.const32(4); this.code.push(OP.I32_ADD);
+            regSet(this, L_NEXTPC);
             this.const32(atPc + 4);
             this.setGPR(rd);
-            regGet(this, rs); this.const32(-4); this.code.push(OP.I32_ADD);
-            regSet(this, L_EXITPC);
-            regGet(this, rs);
-            regSet(this, L_NEXTPC);
             this.transfer = true;
             return "branch";
           }
@@ -265,12 +265,12 @@ class Translator {
         regGet(this, rs); this.const32(simm); this.code.push(OP.I32_ADD);
         regSet(this, L_ADDR);
         regGet(this, L_ADDR); this.code.push(OP.CALL); uleb(this.code, 0); // env.read32(va)
-        if (rt === 0) {
-          this.code.push(OP.DROP); // r0 loads still perform the bus read
-        } else {
-          regSet(this, L_VALUE);
-          this.LD = { reg: rt, val: L_VALUE };
-        }
+        regSet(this, L_VALUE);
+        // The interpreter retains the latest load's reg/value even after its
+        // pending slot lands, so keep that metadata independently of LD.
+        this.const32(OFF_LOAD_REG); this.const32(rt); this.storeState();
+        this.const32(OFF_LOAD_VALUE); regGet(this, L_VALUE); this.storeState();
+        if (rt !== 0) this.LD = { reg: rt, val: L_VALUE };
         return "simple";
       }
 
@@ -318,18 +318,18 @@ class Translator {
           this.const32(atPc + 4);
           this.setGPR(31);
         }
-        this.const32(jumpTarget - 4);
-        regSet(this, L_EXITPC);
         this.const32(jumpTarget);
+        regSet(this, L_EXITPC);
+        this.const32(jumpTarget + 4);
         regSet(this, L_NEXTPC);
         return "branch";
     }
 
     // Conditional branch family. Defaults are the fall-through values; the
     // `if` patches both shadows when taken.
-    const exitFall = (this.startPc + 4 * (i + 1)) | 0;
+    const exitFall = (this.startPc + 4 * (i + 2)) | 0;
     this.const32(exitFall);
-    regSet(this, L_EXITPC); // default: fall through
+    regSet(this, L_EXITPC); // default: instruction after the delay slot
     this.const32(exitFall + 4);
     regSet(this, L_NEXTPC); // default nextPc
     switch (op) {
@@ -356,11 +356,11 @@ class Translator {
         }
         break;
     }
-    // The delay-slot prologue adds four to both shadows.
+    // if (cond) { exit pc = target; nextPc = target + 4 }
     this.code.push(OP.IF, VOID_BLOCK);
-    this.const32(target - 4);
-    regSet(this, L_EXITPC);
     this.const32(target);
+    regSet(this, L_EXITPC);
+    this.const32(target + 4);
     regSet(this, L_NEXTPC);
     this.code.push(OP.END); // 0x0b
     return "branch";
@@ -386,10 +386,6 @@ class Translator {
     // pending. Keep it out of the GPR mirror and export the delay slot so the
     // next block or interpreter step publishes it at the correct boundary.
     this.const32(OFF_LOAD_SLOT); this.const32(this.LD ? 1 : 0); this.storeState();
-    this.const32(OFF_LOAD_REG); this.const32(this.LD?.reg ?? 0); this.storeState();
-    this.const32(OFF_LOAD_VALUE);
-    if (this.LD) regGet(this, this.LD.val); else this.const32(0);
-    this.storeState();
     this.const32(OFF_BRANCH_DELAY); regGet(this, L_BRANCH_DELAY); this.storeState();
     this.code.push(OP.CALL); uleb(this.code, 2); // env.exit()
     this.code.push(OP.UNREACHABLE); // 0x00 — exit never returns
@@ -431,6 +427,7 @@ class Translator {
         i++;
         done = true;
       } else if (kind === "branch") {
+        this.const32(1); regSet(this, L_BRANCH_DELAY);
         i++; // delay slot executes no matter what
         this.flushLoadDelay();
         regAddConst(this, L_CYC, 1); // the delay slot executes a cycle too
@@ -444,7 +441,6 @@ class Translator {
         i++;
       }
     }
-    if (!done) this.flushLoadDelay();
     this.n = i;
     this.emitExit();
   }
@@ -455,9 +451,12 @@ class Translator {
  * through `fetch` (virtual address → word). Returns the wasm binary.
  * Throws if the block contains an instruction outside the supported set.
  */
-export function translateBlock(fetch: (a: number) => number, startPc: number): Uint8Array<ArrayBuffer> {
+export function translateBlock(
+  fetch: (a: number) => number, startPc: number, info?: TranslationInfo,
+): Uint8Array<ArrayBuffer> {
   const t = new Translator();
   t.translate(fetch, startPc);
+  if (info) info.instructions = t.n;
 
   const localsDecl: number[] = [];
   uleb(localsDecl, 1); // one local group
@@ -506,9 +505,9 @@ export interface BlockExports {
 
 /** Compile a block with host hooks; returns the ready-to-run instance. */
 export function compileBlock(
-  fetch: (a: number) => number, startPc: number, hooks: DynarecHooks,
+  fetch: (a: number) => number, startPc: number, hooks: DynarecHooks, info?: TranslationInfo,
 ): WebAssembly.Instance {
-  const bytes: Uint8Array<ArrayBuffer> = translateBlock(fetch, startPc);
+  const bytes: Uint8Array<ArrayBuffer> = translateBlock(fetch, startPc, info);
   const module = new WebAssembly.Module(bytes);
   return new WebAssembly.Instance(module, {
     env: { read32: hooks.read32, write32: hooks.write32, exit: hooks.exit, memory: hooks.memory },

@@ -78,7 +78,11 @@ export class Cpu {
   /** Execute n instructions. Returns false on unhandled exception. */
   run(n: number): boolean {
     for (let i = 0; i < n;) {
-      if (this.enabledDynarec && this.validPc(this.pc)) {
+      // A slice can end between a branch and its delay slot. In that state
+      // nextPc is the branch target, not pc+4; execute the slot interpreted so
+      // a linear block cannot NOP-slide past a J/JAL target.
+      const sequentialPc = this.nextPc === ((this.pc + 4) | 0);
+      if (this.enabledDynarec && sequentialPc && this.validPc(this.pc)) {
         try {
           const count = this.dyn.run(
             this.pc, (a) => this.mem.load32(a) | 0, this.dynHooks, this, n - i,
