@@ -31,7 +31,7 @@ export class Cpu {
     /** MMIO port hooks: port address → value or undefined to fall through. */
     readonly ports: {
       read32(va: number): number | undefined;
-      write32(va: number, v: number): boolean;
+      write32(va: number, v: number, width: number): boolean;
     },
     readonly hleSyscall?: (table: number, fn: number) => number,
   ) {}
@@ -92,24 +92,35 @@ export class Cpu {
             if (rd) r[rd] = t;
             break;
           }
-          case 0x0c: // SYSCALL
-            if (this.hleSyscall) {
-              // HLE shield: $t1 = table selector (1=A,2=B,3=C), $a0 = fn.
-              const table = r[9]!;
-              const fn = r[4]!;
+          case 0x0c: { // SYSCALL
+            const table = curPc & 0x1fff_ffff;
+            if (this.hleSyscall && (table === 0xa0 || table === 0xb0 || table === 0xc0)) {
+              // PSX kernel ABI: vector PC selects A/B/C; R9 ($t1) is the function.
+              const fn = r[9]!;
               const ret = this.hleSyscall(table, fn) ?? 0;
-              if (rt) r[2] = ret | 0; // $v0
+              r[2] = ret | 0; // $v0
               this.pc = r[31]!; // return to caller (stub already did jr ra)
               this.nextPc = (r[31]! + 4) | 0;
               return true;
             }
+            if (r[4] === 1 || r[4] === 2) {
+              const sr = this.cp0[12]!;
+              if (r[4] === 2) {
+                this.cp0[12] = (sr | 0x405) >>> 0; // ExitCriticalSection: IEc, bit2, IRQ mask
+              } else {
+                r[2] = (sr & 0x404) === 0x404 ? 1 : 0;
+                this.cp0[12] = ((sr & ~0x404) | ((sr >>> 2) & 1)) >>> 0;
+              }
+              return true;
+            }
             this.exception(EXC_SYS, 0); return true;
+          }
           case 0x0d: this.exception(EXC_BP, 0); return true; // BREAK
           case 0x10: { // MFHI
             if (rd) r[rd] = this.hi; break;
           }
-          case 0x11: if (rd) r[rd] = this.lo; break; // MFLO
-          case 0x12: this.hi = r[rs]!; break; // MTHI
+          case 0x11: this.hi = r[rs]!; break; // MTHI
+          case 0x12: if (rd) r[rd] = this.lo; break; // MFLO
           case 0x13: this.lo = r[rs]!; break; // MTLO
           case 0x18: { // MULT — exact signed 64-bit product via unsigned limbs
             const a = r[rs]!, b = r[rt]!;
@@ -168,8 +179,8 @@ export class Cpu {
         }
         return true;
 
-      case 0x02: this.jump(imm); return true; // J
-      case 0x03: r[31] = (curPc + 8) | 0; this.jump(imm); return true; // JAL
+      case 0x02: this.jump(instr & 0x03ff_ffff); return true; // J
+      case 0x03: r[31] = (curPc + 8) | 0; this.jump(instr & 0x03ff_ffff); return true; // JAL
       case 0x04: if (r[rs]! === r[rt]!) this.branch(simm); return true; // BEQ
       case 0x05: if (r[rs]! !== r[rt]!) this.branch(simm); return true; // BNE
       case 0x06: if (r[rs]! <= 0) this.branch(simm); return true; // BLEZ
@@ -188,7 +199,7 @@ export class Cpu {
           case 0x00: if (rt) r[rt] = this.cp0[rd]! | 0; break; // MFC0
           case 0x04: this.cp0[rd] = r[rt]! >>> 0; break; // MTC0
           case 0x10: // RFE — restore exception SR: bits 3:2 → 1:0, clear 5:2
-            if (fn === 0x18) {
+            if (fn === 0x10) {
               const sr = this.cp0[12]!;
               this.cp0[12] = ((sr & ~0x3f) | ((sr >>> 2) & 0x3)) >>> 0;
             }
@@ -243,8 +254,8 @@ export class Cpu {
       }
       case 0x28: return this.store(rt, this.addr(rs, simm), 8); // SB
       case 0x29: return this.store(rt, this.addr(rs, simm), 16); // SH
-      case 0x2a: return this.store(rt, this.addr(rs, simm), 32); // SW
-      case 0x2b: { // SWL — R_SWL @0x43aec0 byte-exact
+      case 0x2b: return this.store(rt, this.addr(rs, simm), 32); // SW
+      case 0x2a: { // SWL — R_SWL @0x43aec0 byte-exact
         const a = this.addr(rs, simm);
         const n = a & 3, old = this.mem.load32(a & ~3), v = r[rt]!;
         if (n === 0) this.mem.store32(a & ~3, (old & 0xffff_ff00) | ((v >>> 24) & 0xff));
@@ -301,14 +312,17 @@ export class Cpu {
       this.loadDelay = rt === 0 ? { slot: 0, reg: 0, value: 0 } : { slot: 1, reg: rt, value: sv };
       return true;
     }
-    let v: number;
-    if (width === 8) {
-      const b = this.mem.load8(va);
-      v = unsigned ? b : ((b << 24) >> 24);
-    } else if (width === 16) {
-      const h = this.mem.load8(va) | (this.mem.load8(va + 1) << 8);
-      v = unsigned ? h : (h << 16) >> 16;
-    } else v = this.mem.load32(va) | 0;
+    const mmio = va >= 0x1f80_1000 && va <= 0x1f80_1fff ? this.ports.read32(va) : undefined;
+    let raw: number;
+    if (mmio !== undefined) raw = mmio;
+    else if (width === 8) raw = this.mem.load8(va);
+    else if (width === 16) raw = this.mem.load8(va) | (this.mem.load8(va + 1) << 8);
+    else raw = this.mem.load32(va);
+    const v = width === 8
+      ? (unsigned ? raw & 0xff : (raw << 24) >> 24)
+      : width === 16
+        ? (unsigned ? raw & 0xffff : (raw << 16) >> 16)
+        : raw | 0;
     // Load-delay: land in the NEXT cycle. One slot, overwrite semantics.
     if (this.loadDelay.slot) {
       const { reg } = this.loadDelay;
@@ -332,9 +346,9 @@ export class Cpu {
       return true;
     }
     const v = this.r[rt]!;
+    // MMIO ports first: preserve the CPU access width for byte/halfword registers.
+    if (va >= 0x1f80_1000 && va <= 0x1f80_1fff && this.ports.write32(va, v, width)) return true;
     if (width === 32) {
-      // MMIO ports first: 0x1F801000+ window (GPU/IRQ/DMA) → bus hooks.
-      if (va >= 0x1f80_1000 && va <= 0x1f80_1fff && this.ports.write32(va, v)) return true;
       this.mem.store32(va, v);
       return true;
     }
@@ -380,15 +394,14 @@ export class Cpu {
    * return to EPC+4, skipping the faulting instruction — instead of jumping
    * to the vector. Full CP0 exception delivery is a Phase-3+ ticket.
    */
-  exception(code: number, /* unused */ _info: number): void {
+  exception(code: number, _info: number): void {
     const sr = this.cp0[12]!;
-    this.cp0[13] = ((code << 2) | (this.inBranchDelay ? (1 << 31) : 0)) >>> 0; // CAUSE
+    this.cp0[13] = ((code << 2) | (_info & 0xff00) | (this.inBranchDelay ? (1 << 31) : 0)) >>> 0; // CAUSE
     this.cp0[12] = ((sr & ~0xf) | ((sr << 2) & 0x3f)) >>> 0;
     // If a handler exists at the vector, deliver the exception; otherwise
     // emulate the BIOS default outcome: return past the faulting instruction.
     const epc = (this.pc - (this.inBranchDelay ? 4 : 0)) >>> 0;
     this.cp0[14] = epc;
-    if ((globalThis as any).__dtrace) console.log("[exc] code=" + code + " epc=0x" + ((this.pc - (this.inBranchDelay ? 4 : 0)) >>> 0).toString(16) + " handler=" + (this.mem.load32(0x8000_0080) !== 0));
     if (this.mem.load32(0x8000_0080) !== 0) {
       this.pc = 0x8000_0080;
       this.nextPc = 0x8000_0084;
