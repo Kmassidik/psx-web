@@ -224,6 +224,24 @@ describe("Hardware interrupt delivery", () => {
     }
   });
 
+  test("custom exception hook preserves the saved continuation stack pointer", () => {
+    const m = new Machine();
+    m.installHleVectors();
+    m.mem.store32(0x4000, 0x8001_0000);
+    m.mem.store32(0x4004, 0x807f_fef0);
+    m.mem.store32(0x4008, 0x807f_0000);
+    m.cpu.reset(0xb0);
+    m.cpu.r[9] = 0x19;
+    m.cpu.r[4] = 0x4000;
+    m.cpu.r[31] = 0x200;
+    m.cpu.step();
+    const original = m.cpu.step.bind(m.cpu);
+    let observed = 0;
+    m.cpu.step = () => { observed = m.cpu.r[29]! >>> 0; return original(); };
+    m["runHandler"](0x8001_0000, "exception");
+    expect(observed).toBe(0x807f_fef0);
+  });
+
   test("custom exception hook runs after default service with CPU state preserved", () => {
     const m = new Machine();
     m.installHleVectors();

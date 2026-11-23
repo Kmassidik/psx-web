@@ -188,6 +188,24 @@ export class BiosKernel {
         return 0;
       case 0x51: // LoadAndExecute(filename, stackbase, stackoffset)
         return this.loadAndExecute();
+      case 0x13: { // SaveState(buf): r31, r29, r30, r16..r23, r28 (30h bytes)
+        const buf = this.cpu.r[4]!;
+        this.cpu.mem.store32(buf, this.cpu.r[31]!);
+        this.cpu.mem.store32(buf + 4, this.cpu.r[29]!);
+        this.cpu.mem.store32(buf + 8, this.cpu.r[30]!);
+        for (let reg = 16; reg <= 23; reg++) this.cpu.mem.store32(buf + 0x0c + (reg - 16) * 4, this.cpu.r[reg]!);
+        this.cpu.mem.store32(buf + 0x2c, this.cpu.r[28]!);
+        return 0;
+      }
+      case 0x14: { // RestoreState(buf, param): restore saved registers and return to saved RA
+        const buf = this.cpu.r[4]!;
+        this.cpu.r[31] = this.cpu.mem.load32(buf);
+        this.cpu.r[29] = this.cpu.mem.load32(buf + 4);
+        this.cpu.r[30] = this.cpu.mem.load32(buf + 8);
+        for (let reg = 16; reg <= 23; reg++) this.cpu.r[reg] = this.cpu.mem.load32(buf + 0x0c + (reg - 16) * 4);
+        this.cpu.r[28] = this.cpu.mem.load32(buf + 0x2c);
+        return this.cpu.r[5]!;
+      }
       case 0x32: // FileOpen — full filesystem delivery is not implemented
         return 0xdead_0001;
       default:

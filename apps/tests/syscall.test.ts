@@ -54,6 +54,32 @@ describe("BIOS-free kernel services", () => {
     expect(m.cpu.r[2]).toBe(0xf100_0005 | 0);
   });
 
+  test("SaveState and RestoreState preserve the saved register frame and return value", () => {
+    const m = new Machine();
+    m.installHleVectors();
+    m.cpu.r[31] = 0x8012_3456;
+    m.cpu.r[29] = 0x801f_e000;
+    m.cpu.r[30] = 0x801f_d000;
+    m.cpu.r[28] = 0x8000_8000;
+    for (let reg = 16; reg <= 23; reg++) m.cpu.r[reg] = 0x1000 + reg;
+    expect(call(m, 0xa0, 0x13, 0x4000)).toBe(0);
+    expect(m.mem.load32(0x4000)).toBe(0x200);
+    m.mem.store32(0x4004, 0x801f_e000);
+    m.mem.store32(0x4008, 0x801f_d000);
+    m.mem.store32(0x402c, 0x8000_8000);
+    for (let reg = 16; reg <= 23; reg++) m.mem.store32(0x400c + (reg - 16) * 4, 0x1000 + reg);
+    for (let reg = 16; reg <= 23; reg++) m.cpu.r[reg] = 0;
+    m.cpu.r[28] = 0;
+    m.cpu.r[29] = 0;
+    m.cpu.r[30] = 0;
+    expect(call(m, 0xa0, 0x14, 0x4000, 7)).toBe(7);
+    expect(m.cpu.pc).toBe(0x200);
+    expect(m.cpu.r[29]).toBe(0x801f_e000 | 0);
+    expect(m.cpu.r[30]).toBe(0x801f_d000 | 0);
+    expect(m.cpu.r[28]).toBe(0x8000_8000 | 0);
+    for (let reg = 16; reg <= 23; reg++) expect(m.cpu.r[reg]).toBe(0x1000 + reg);
+  });
+
   test("legacy pad reads active-low X and direction buttons", () => {
     const m = new Machine();
     m.installHleVectors();
