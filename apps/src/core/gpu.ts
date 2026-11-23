@@ -9,12 +9,51 @@ import { rasterize, PrimVert } from "./gpu-raster";
 export const VRAM_W = 1024;
 export const VRAM_H = 512;
 
+/** Native active display rectangle and its tightly packed RGBA8888 pixels. */
+export interface GpuDisplayFrame {
+  readonly x: number;
+  readonly y: number;
+  readonly width: number;
+  readonly height: number;
+  readonly enabled: boolean;
+  readonly interlaced: boolean;
+  readonly pal: boolean;
+  readonly colorDepth: 15 | 24;
+  readonly rgba: Uint8Array;
+}
+
+interface MutableGpuDisplayFrame {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  enabled: boolean;
+  interlaced: boolean;
+  pal: boolean;
+  colorDepth: 15 | 24;
+  rgba: Uint8Array;
+}
+
 export class Gpu {
   readonly vram = new Uint16Array(VRAM_W * VRAM_H);
   /** 24-bit RGBA 640×480 display output (blitted to canvas per frame). */
   readonly screen = new Uint8Array(640 * 480 * 4);
-  gpur1 = 640; gpur2 = 480; // display resolution (GP1 mode)
+  gpur1 = 640; gpur2 = 480; // active display size (legacy composeFrame output)
   dispEnable = true;
+
+  // Keep the original power-on shape for composeFrame compatibility. GP1(00h)
+  // below installs the hardware reset values before software configures video.
+  private displayMode = 0x07;
+  private dmaDirection = 0;
+  private horizontalStart = 0;
+  private horizontalEnd = 640 * 4;
+  private verticalStart = 0;
+  private verticalEnd = 480;
+  private readonly display: MutableGpuDisplayFrame = {
+    x: 0, y: 0, width: 640, height: 480,
+    enabled: true, interlaced: false, pal: false, colorDepth: 15,
+    rgba: new Uint8Array(0),
+  };
 
   private gp0Mode = 0;
   private cmdWords: number[] = [];
@@ -231,20 +270,89 @@ export class Gpu {
   /** GP1 write (port 0x1F801814): display control. */
   writeGP1(w: number): void {
     switch ((w >>> 24) & 0xff) {
-      case 0x03: this.dispEnable = (w & 1) === 0; break;
-      case 0x05: /* display start */ break;
-      case 0x06: /* horizontal range */ break;
-      case 0x07: /* vertical range */ break;
-      case 0x08: {
-        const mode = w & 3;
-        this.gpur2 = mode === 1 ? 256 : 480; // 0:480i, 1:256, 2/3:480
+      case 0x00:
+        this.gp0Mode = 0;
+        this.cmdWords = [];
+        this.primWords = [];
+        this.cmdLeft = 0;
+        this.texPage = 0;
+        this.clutBase = 0;
+        this.dispEnable = false;
+        this.dmaDirection = 0;
+        this.displayMode = 0;
+        this.display.x = 0;
+        this.display.y = 0;
+        this.horizontalStart = 0x200;
+        this.horizontalEnd = 0x200 + 256 * 10;
+        this.verticalStart = 0x10;
+        this.verticalEnd = 0x10 + 240;
+        this.updateDisplayRectangle();
         break;
-      }
+      case 0x01:
+        this.gp0Mode = 0;
+        this.cmdWords = [];
+        this.primWords = [];
+        this.cmdLeft = 0;
+        break;
+      case 0x03:
+        this.dispEnable = (w & 1) === 0;
+        this.display.enabled = this.dispEnable;
+        break;
+      case 0x04: this.dmaDirection = w & 3; break;
+      case 0x05:
+        this.display.x = w & 0x3ff;
+        this.display.y = (w >>> 10) & 0x1ff;
+        break;
+      case 0x06:
+        this.horizontalStart = w & 0xfff;
+        this.horizontalEnd = (w >>> 12) & 0xfff;
+        this.updateDisplayRectangle();
+        break;
+      case 0x07:
+        this.verticalStart = w & 0x3ff;
+        this.verticalEnd = (w >>> 10) & 0x3ff;
+        this.updateDisplayRectangle();
+        break;
+      case 0x08:
+        this.displayMode = w & 0xff;
+        this.updateDisplayRectangle();
+        break;
     }
   }
 
   readGPUSTAT(): number {
-    return 0x1c00_0000 | (this.dispEnable ? 0x0080_0000 : 0);
+    const mode = this.displayMode;
+    return (0x1c00_0000
+      | (this.dmaDirection << 29)
+      | (this.dispEnable ? 0 : 0x0080_0000)
+      | ((mode & 0x80) << 7)
+      | ((mode & 0x40) << 10)
+      | ((mode & 0x03) << 17)
+      | ((mode & 0x3c) << 17)) >>> 0;
+  }
+
+  private updateDisplayRectangle(): void {
+    const mode = this.displayMode;
+    const baseWidth = [256, 320, 512, 640][mode & 3]!;
+    const nominalWidth = (mode & 0x40) !== 0 ? 368 : baseWidth;
+    const cyclesPerPixel = nominalWidth === 256 ? 10
+      : nominalWidth === 320 ? 8
+        : nominalWidth === 368 ? 7
+          : nominalWidth === 512 ? 5 : 4;
+    const horizontalRange = Math.max(0, this.horizontalEnd - this.horizontalStart);
+    const verticalRange = Math.max(0, this.verticalEnd - this.verticalStart);
+    // psx-spx GP1(06h/07h): horizontal size is rounded to four pixels;
+    // vertical size is the exact scanline range, with no rounding.
+    const width = (Math.floor(horizontalRange / cyclesPerPixel) + 2) & ~3;
+    const height = verticalRange;
+    this.gpur1 = width;
+    this.gpur2 = height;
+    this.display.width = width;
+    this.display.height = height;
+    this.display.enabled = this.dispEnable;
+    this.display.interlaced = (mode & 0x20) !== 0;
+    this.display.pal = (mode & 0x08) !== 0;
+    this.display.colorDepth = (mode & 0x10) !== 0 ? 24 : 15;
   }
 
   /** Convert current display area to RGBA for the canvas (per-frame, once). */
@@ -262,6 +370,63 @@ export class Gpu {
         s[o + 3] = 255;
       }
     }
+  }
+
+  /**
+   * Compose the native GP1 active rectangle. The returned object and pixel
+   * buffer are reused; callers must consume/copy rgba before the next frame.
+   * Interlaced modes return both fields as one complete framebuffer image, so
+   * presentation cannot retain a stale field when its cadence differs from
+   * emulated vertical sync.
+   */
+  composeDisplayFrame(): Readonly<GpuDisplayFrame> {
+    const d = this.display;
+    const size = d.width * d.height * 4;
+    if (d.rgba.length !== size) d.rgba = new Uint8Array(size);
+    const s = d.rgba;
+    if (!d.enabled) {
+      s.fill(0);
+      for (let o = 3; o < s.length; o += 4) s[o] = 255;
+      return d;
+    }
+
+    for (let y = 0; y < d.height; y++) {
+      const sourceY = (d.y + y) & (VRAM_H - 1);
+      const row = sourceY * VRAM_W;
+      let o = y * d.width * 4;
+      if (d.colorDepth === 24) {
+        for (let x = 0; x < d.width; x++, o += 4) {
+          // 24-bit display pixels are packed RGB byte triplets in VRAM;
+          // GP1(05h).x remains a halfword address in this mode.
+          const byteOffset = d.x * 2 + x * 3;
+          const sourceX = (byteOffset >>> 1) & (VRAM_W - 1);
+          const nextX = (sourceX + 1) & (VRAM_W - 1);
+          const lo = this.vram[row + sourceX]!;
+          const hi = this.vram[row + nextX]!;
+          if ((byteOffset & 1) === 0) {
+            s[o] = lo & 0xff;
+            s[o + 1] = lo >>> 8;
+            s[o + 2] = hi & 0xff;
+          } else {
+            s[o] = lo >>> 8;
+            s[o + 1] = hi & 0xff;
+            s[o + 2] = hi >>> 8;
+          }
+          s[o + 3] = 255;
+        }
+      } else {
+        for (let x = 0; x < d.width; x++, o += 4) {
+          const sourceX = (d.x + x) & (VRAM_W - 1);
+          const p = this.vram[row + sourceX]!;
+          const r5 = p & 31, g5 = (p >> 5) & 31, b5 = (p >> 10) & 31;
+          s[o] = (r5 << 3) | (r5 >> 2);
+          s[o + 1] = (g5 << 3) | (g5 >> 2);
+          s[o + 2] = (b5 << 3) | (b5 >> 2);
+          s[o + 3] = 255;
+        }
+      }
+    }
+    return d;
   }
 
   hashFrame(): number {

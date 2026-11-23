@@ -25,6 +25,7 @@
         overflow: hidden;
         background: #ededed;
       }
+      .epsxe-window:fullscreen { width: 100%; height: 100dvh; min-height: 0; }
       .window-titlebar {
         flex: 0 0 27px;
         display: flex;
@@ -116,6 +117,7 @@
       .display-area:focus-visible { box-shadow: inset 0 0 0 2px #316ac5; }
       .canvas-shell {
         position: relative;
+        flex: 0 0 auto;
         width: min(640px, 100%, calc((100dvh - 106px) * 4 / 3));
         aspect-ratio: 4 / 3;
         overflow: hidden;
@@ -298,7 +300,12 @@
         border-bottom: 1px solid #c4c4c4;
       }
       .binding-field { display: grid; grid-template-columns: minmax(48px, 1fr) 66px; align-items: center; gap: 4px; font-size: 11px; }
-      .binding-entry { width: 66px; text-align: center; }
+      .binding-entry { width: 66px; text-align: center; cursor: pointer; }
+      .binding-entry.is-capturing { border-color: #316ac5; background: #e8f1fb; }
+      .dialog-note, .about-content { max-width: 510px; margin: 0 0 12px; color: #444; line-height: 1.45; }
+      .about-content p { margin: 0 0 10px; }
+      .dialog-defaults { align-self: flex-start; }
+      .menu-item:disabled { cursor: not-allowed; }
       .gamepad-footer { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
       .edit-button-label { flex: 1; color: #444; font-size: 11px; text-align: center; }
       .gamepad-default-actions { display: flex; gap: 6px; }

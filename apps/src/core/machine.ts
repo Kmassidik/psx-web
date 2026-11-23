@@ -26,6 +26,7 @@ import { Spu } from "./spu";
 import { Mdec } from "./mdec";
 import type { SectorProvider } from "./loader/iso9660";
 import { Joypad } from "./joypad";
+import type { SpuAudioSink } from "./spu-audio";
 
 export class Machine {
   readonly mem = new Memory();
@@ -60,6 +61,7 @@ export class Machine {
 
   constructor() {
     this.rcnt.irqFire = (line) => { this.raiseIrq(1 << line); };
+    this.joypad.irqFire = () => { this.raiseIrq(1 << 7); };
     this.dma.raiseIrq = () => {
       this.raiseIrq(IRQ_DMA);
     };
@@ -85,6 +87,8 @@ export class Machine {
     readRam: (a: number) => this.mem.load32(a & 0x1f_fffc),
     writeRam: (a: number, v: number) => this.mem.store32(a & 0x1f_fffc, v),
     gpuWrite: (w: number) => this.gpu.writeGP0(w),
+    mdecIn: (w: number) => this.mdec.pushWord(w),
+    mdecOut: () => this.mdec.readOutput()[0] ?? 0,
     cdromRead: () => this.cdrom.readData32(),
     spuWrite: (w: number) => {
       this.spu.write(0x01a8, w & 0xffff);
@@ -113,6 +117,11 @@ export class Machine {
       default: {
         const joypadValue = this.joypad.read(va);
         if (joypadValue !== undefined) return joypadValue;
+        if (va >= 0x1f80_1100 && va <= 0x1f80_1128 && (va & 3) === 0) {
+          const timer = ((va - 0x1f80_1100) >>> 4) & 3;
+          const reg = (va & 0x0f) >>> 2;
+          if (timer < 3 && reg < 3) return this.rcnt.regs[timer * 3 + reg]!;
+        }
         // DMA register window 0x1F801080-0x1F8010FF → DmaUnit regs.
         if (va >= 0x1f80_1080 && va <= 0x1f80_10f7) {
           if (va === 0x1f80_10f0) return this.dma.dpcr | 0;
@@ -147,6 +156,12 @@ export class Machine {
       case 0x1f801814: this.gpu.writeGP1(v); return true;
       default: {
         if (this.joypad.write(va, v)) return true;
+        if (va >= 0x1f80_1100 && va <= 0x1f80_1128 && (va & 3) === 0) {
+          const timer = ((va - 0x1f80_1100) >>> 4) & 3;
+          const reg = (va & 0x0f) >>> 2;
+          if (timer < 3 && reg < 3) this.rcnt.regs[timer * 3 + reg] = v & 0xffff;
+          return true;
+        }
         if (va >= 0x1f80_1080 && va <= 0x1f80_10f7) {
           if (va === 0x1f80_10f0) { this.dma.dpcr = v >>> 0; return true; }
           if (va === 0x1f80_10f4) { this.dma.writeDicr(v >>> 0); return true; }
@@ -213,8 +228,14 @@ export class Machine {
     this.cpu.pc = entry;
     this.cpu.nextPc = (entry + 4) | 0;
     this.cpu.r[31] = 0x8000_0110;
-    for (let i = 0; i < 10_000 && this.cpu.pc !== 0x8000_0110; i++) {
+    for (let i = 0; i < 1_000_000 && this.cpu.pc !== 0x8000_0110; i++) {
+      const handlerPc = this.cpu.pc >>> 0;
+      const vector = handlerPc & 0x1fff_ffff;
+      const isVector = vector === 0xa0 || vector === 0xb0 || vector === 0xc0;
+      const isHleRam = handlerPc >= 0x8000_0100 && handlerPc < 0x8000_3000;
+      if (handlerPc < 0x8000_0000 && !isVector && !isHleRam) break;
       if (!this.cpu.step()) break;
+      this.rcnt.tick(1);
     }
     this.cpu.r.set(registers);
     this.cpu.cp0.set(cp0);
@@ -228,6 +249,13 @@ export class Machine {
 
   private vblankAcc = 0;
   private spuDmaDone = false;
+  private audioSink: SpuAudioSink | null = null;
+  private audioLeft = new Float32Array(0);
+  private audioRight = new Float32Array(0);
+
+  setAudioSink(sink: SpuAudioSink | null): void {
+    this.audioSink = sink;
+  }
 
   /** Run up to n CPU instructions with DMA/CDROM/SPU/rcnt service per slice. */
   runSlice(n: number): boolean {
@@ -245,7 +273,19 @@ export class Machine {
     this.runEventCallbacks();
     this.cdrom.pump();
     this.cdrom.exec(); // one interrupt-bucket per slice (timing: see cdrom.ts)
-    this.spu.tick(n); // SPU clock = cpu cycles / 768 internally
+    if (this.audioSink) {
+      const frames = Math.floor(n / 768);
+      if (this.audioLeft.length < frames) {
+        this.audioLeft = new Float32Array(frames);
+        this.audioRight = new Float32Array(frames);
+      }
+      const left = this.audioLeft.subarray(0, frames);
+      const right = this.audioRight.subarray(0, frames);
+      this.spu.mix(left, right);
+      this.audioSink.push(left, right);
+    } else {
+      this.spu.tick(n); // SPU clock = cpu cycles / 768 internally
+    }
     this.rcnt.tick(n);
     // VBLANK: ~60Hz — accumulate CPU cycles and raise IRQ line 0 each frame
     // (N = cycles/frame ≈ 33.8M/60 ≈ 563k at 33.8MHz CPU).

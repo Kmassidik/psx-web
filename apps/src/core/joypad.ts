@@ -1,44 +1,85 @@
-/** SIO0 digital controller: serial read command and active-low button bytes. */
+/** SIO0 serial bus and standard digital/analog controller peripherals. */
+const JOY_DATA = 0x1f80_1040;
+const JOY_STAT = 0x1f80_1044;
+const JOY_MODE = 0x1f80_1048;
+const JOY_CTRL = 0x1f80_104a;
+const JOY_BAUD = 0x1f80_104e;
+
+const CTRL_TXEN = 1 << 0;
+const CTRL_DTR = 1 << 1;
+const CTRL_ERRRST = 1 << 4;
+const CTRL_INTRST = 1 << 6;
+const CTRL_DSRIEN = 1 << 12;
+const CTRL_PORT = 1 << 13;
+const CTRL_READ_MASK = 0x3f07;
+const MODE_READ_MASK = 0x013f;
+
+export type JoypadPort = 0 | 1;
+
+/**
+ * SIO0 controller port and a PS1 dual-shock peripheral. Transfers complete
+ * immediately; /ACK is represented by STAT.7 until the next byte or ERRRST.
+ * The peripheral starts in digital mode, but supports the standard config
+ * commands used to enable analog sticks and either rumble motor.
+ */
 export class Joypad {
+  /** SIO0 /ACK interrupt hook (I_STAT line 7). */
+  irqFire: (line: number) => void = () => {};
+  /** Host actuator hook: small motor is on/off, large motor is 0..255. */
+  rumble: (port: JoypadPort, small: boolean, large: number) => void = () => {};
+
   private readonly rx: number[] = [];
-  private command = 0;
   private mode = 0;
   private ctrl = 0;
   private baud = 0x88;
+  private ack = false;
+  private irq = false;
+
+  private readonly connected = [true, true];
+  private readonly analog = [false, false];
+  private readonly analogLocked = [false, false];
+  private readonly config = [false, false];
+  private readonly axes = new Uint8Array(8).fill(0x80);
+  private readonly rumbleMap = new Uint8Array(12).fill(0xff);
+  private readonly oldRumble = [true, true];
+  private readonly smallMotor = [false, false];
+  private readonly largeMotor = new Uint8Array(2);
+
+  private response: number[] = [];
+  private sent: number[] = [];
+  private packetIndex = 0;
+  private packetPort: JoypadPort = 0;
+  private command = 0;
+  private addressed = false;
 
   constructor(private readonly pads: { pad1: number; pad2: number }) {}
 
   read(address: number): number | undefined {
     switch (address) {
-      case 0x1f80_1040:
+      case JOY_DATA:
         return this.rx.length > 0 ? this.rx.shift()! : 0xff;
-      case 0x1f80_1044:
-        return 0x05 | (this.rx.length > 0 ? 0x02 : 0);
-      case 0x1f80_1048: return this.mode;
-      case 0x1f80_104a: return this.ctrl;
-      case 0x1f80_104e: return this.baud;
+      case JOY_STAT:
+        return 0x05 | (this.rx.length > 0 ? 0x02 : 0) |
+          (this.ack ? 0x80 : 0) | (this.irq ? 0x200 : 0);
+      case JOY_MODE: return this.mode;
+      case JOY_CTRL: return this.ctrl;
+      case JOY_BAUD: return this.baud;
       default: return undefined;
     }
   }
 
   write(address: number, value: number): boolean {
     switch (address) {
-      case 0x1f80_1040:
+      case JOY_DATA:
         this.transfer(value & 0xff);
         return true;
-      case 0x1f80_1048:
-        this.mode = value & 0xffff;
+      case JOY_MODE:
+        this.mode = value & MODE_READ_MASK;
         return true;
-      case 0x1f80_104a:
-        if ((value & 0x40) !== 0) {
-          this.mode = this.ctrl = 0;
-          this.baud = 0x88;
-          this.rx.length = 0;
-          this.command = 0;
-        }
-        this.ctrl = value & 0xffff;
+      case JOY_CTRL:
+        this.writeControl(value & 0xffff);
         return true;
-      case 0x1f80_104e:
+      case JOY_BAUD:
         this.baud = value & 0xffff;
         return true;
       default:
@@ -46,33 +87,223 @@ export class Joypad {
     }
   }
 
+  /** Connect/disconnect a physical port; a reconnect resets peripheral state. */
+  setConnected(port: JoypadPort, connected: boolean): void {
+    if (this.connected[port] === connected) return;
+    this.connected[port] = connected;
+    this.resetPeripheral(port);
+    this.setMotors(port, false, 0);
+    if (!connected && this.packetPort === port) this.resetTransaction();
+  }
+
+  /** Set normalized axes in wire order: right X/Y, then left X/Y (-1..1). */
+  setAxes(port: JoypadPort, values: readonly [number, number, number, number]): void {
+    const offset = port * 4;
+    for (let i = 0; i < 4; i++) {
+      const value = values[i]!;
+      const clamped = Number.isFinite(value) ? Math.max(-1, Math.min(1, value)) : 0;
+      this.axes[offset + i] = Math.round((clamped + 1) * 127.5);
+    }
+  }
+
+  /** Model the controller's Analog button, including a software mode lock. */
+  setAnalogMode(port: JoypadPort, enabled: boolean): void {
+    if (this.analogLocked[port]) return;
+    this.analog[port] = enabled;
+    this.config[port] = false;
+    this.resetRumble(port);
+  }
+
+  private writeControl(value: number): void {
+    if ((value & CTRL_INTRST) !== 0) {
+      this.mode = this.ctrl = 0;
+      this.baud = 0x88;
+      this.rx.length = 0;
+      this.ack = this.irq = false;
+      this.resetTransaction();
+      return;
+    }
+
+    if ((value & CTRL_ERRRST) !== 0) this.ack = this.irq = false;
+    const next = value & CTRL_READ_MASK;
+    const selectionChanged = (next & CTRL_PORT) !== (this.ctrl & CTRL_PORT);
+    const chipSelectChanged = (next & CTRL_DTR) !== (this.ctrl & CTRL_DTR);
+    if (selectionChanged || chipSelectChanged) this.resetTransaction();
+    this.ctrl = next;
+  }
+
   private transfer(value: number): void {
-    if (value === 0x01) {
-      this.command = 1;
-      this.rx.push(0xff);
+    this.ack = false;
+    if ((this.ctrl & (CTRL_TXEN | CTRL_DTR)) !== (CTRL_TXEN | CTRL_DTR)) {
+      this.receive(0xff);
       return;
     }
-    if (value === 0x42 && this.command === 1) {
-      this.command = 2;
-      this.rx.push(0x41);
-      return;
-    }
-    if (this.command === 2) {
-      this.command = 3;
-      this.rx.push(0x5a);
-      return;
-    }
-    if (this.command === 3) {
-      this.command = 4;
-      this.rx.push(this.pads.pad1 & 0xff);
-      return;
-    }
-    if (this.command === 4) {
+
+    const port = ((this.ctrl & CTRL_PORT) !== 0 ? 1 : 0) as JoypadPort;
+    if (this.packetIndex === 0) {
+      this.packetPort = port;
+      this.sent = [value];
+      this.response = [0xff];
       this.command = 0;
-      this.rx.push((this.pads.pad1 >>> 8) & 0xff);
+      this.addressed = value === 0x01 && this.connected[port] === true;
+      this.packetIndex = 1;
+      this.receive(0xff);
+      if (this.addressed) this.acknowledge();
       return;
     }
+
+    if (port !== this.packetPort || !this.addressed || !this.connected[port]) {
+      this.receive(0xff);
+      return;
+    }
+
+    const index = this.packetIndex;
+    this.sent.push(value);
+    if (index === 1) {
+      this.command = value;
+      this.buildResponse(port, value);
+    } else {
+      this.applyParameter(port, index, value);
+    }
+
+    this.receive(this.response[index] ?? 0xff);
+    this.packetIndex++;
+    if (index < this.response.length - 1) this.acknowledge();
+    if (index === this.response.length - 1 && this.command === 0x42) {
+      this.updateRumble(port);
+    }
+  }
+
+  private buildResponse(port: JoypadPort, command: number): void {
+    if (this.config[port]) {
+      this.buildConfigResponse(port, command);
+      return;
+    }
+    if (command !== 0x42 && command !== 0x43) {
+      this.response = [0xff, 0xff];
+      return;
+    }
+
+    const buttons = port === 0 ? this.pads.pad1 : this.pads.pad2;
+    const data = [buttons & 0xff, (buttons >>> 8) & 0xff];
+    if (this.analog[port]) {
+      for (let i = 0; i < 4; i++) data.push(this.axes[port * 4 + i]!);
+    } else if (command === 0x42) {
+      // Mapping motors onto later command bytes extends an otherwise digital
+      // packet and increases the ID's following-halfword count accordingly.
+      let lastCommandByte = 4;
+      for (let i = 0; i < 6; i++) {
+        if (this.rumbleMap[port * 6 + i]! <= 1) lastCommandByte = Math.max(lastCommandByte, i + 3);
+      }
+      while (data.length < lastCommandByte - 2) data.push(0);
+      if ((data.length & 1) !== 0) data.push(0);
+    }
+    const id = this.analog[port] ? 0x73 : (0x40 | (data.length >>> 1));
+    this.response = [0xff, id, 0x5a, ...data];
+  }
+
+  private buildConfigResponse(port: JoypadPort, command: number): void {
+    let data = [0, 0, 0, 0, 0, 0];
+    if (command === 0x42) {
+      const buttons = port === 0 ? this.pads.pad1 : this.pads.pad2;
+      data = [buttons & 0xff, (buttons >>> 8) & 0xff];
+      for (let i = 0; i < 4; i++) data.push(this.axes[port * 4 + i]!);
+    } else if (command === 0x45) {
+      data = [0x01, 0x02, this.analog[port] ? 1 : 0, 0x02, 0x01, 0x00];
+    } else if (command === 0x47) {
+      data = [0x00, 0x00, 0x02, 0x00, 0x01, 0x00];
+    } else if (command === 0x4d) {
+      for (let i = 0; i < 6; i++) data[i] = this.rumbleMap[port * 6 + i]!;
+    }
+    this.response = [0xff, 0xf3, 0x5a, ...data];
+  }
+
+  private applyParameter(port: JoypadPort, index: number, value: number): void {
+    if (index === 3 && this.command === 0x43) {
+      this.config[port] = value !== 0;
+      if (this.config[port]) this.oldRumble[port] = false;
+      return;
+    }
+    if (!this.config[port]) return;
+
+    if (this.command === 0x44) {
+      if (index === 3 && value <= 1) this.analog[port] = value !== 0;
+      if (index === 4) this.analogLocked[port] = (value & 3) === 3;
+    } else if (this.command === 0x46 && index === 3) {
+      const response = value === 0 ? [0x01, 0x02, 0x00, 0x0a] :
+        value === 1 ? [0x01, 0x01, 0x01, 0x14] : [0, 0, 0, 0];
+      for (let i = 0; i < 4; i++) this.response[index + 2 + i] = response[i]!;
+    } else if (this.command === 0x4c && index === 3) {
+      this.response[6] = value === 0 ? 0x04 : value === 1 ? 0x07 : 0;
+    } else if (this.command === 0x48 && index === 3) {
+      this.response[7] = value <= 1 ? 1 : 0;
+    } else if (this.command === 0x4d && index >= 3 && index <= 8) {
+      this.rumbleMap[port * 6 + index - 3] = value;
+    }
+  }
+
+  private updateRumble(port: JoypadPort): void {
+    let small = false;
+    let large = 0;
+    let mapped = false;
+    for (let i = 0; i < 6; i++) {
+      const mapping = this.rumbleMap[port * 6 + i]!;
+      const value = this.sent[i + 3] ?? 0;
+      if (mapping === 0) {
+        small ||= (value & 1) !== 0;
+        mapped = true;
+      } else if (mapping === 1) {
+        large = Math.max(large, value);
+        mapped = true;
+      }
+    }
+    if (!mapped && this.oldRumble[port] && !this.config[port]) {
+      const smallControl = this.sent[3] ?? 0;
+      const largeControl = this.sent[4] ?? 0;
+      small = (smallControl & 0xc0) === 0x40 && (largeControl & 1) !== 0;
+    }
+    this.setMotors(port, small, large);
+  }
+
+  private setMotors(port: JoypadPort, small: boolean, large: number): void {
+    if (this.smallMotor[port] === small && this.largeMotor[port] === large) return;
+    this.smallMotor[port] = small;
+    this.largeMotor[port] = large;
+    this.rumble(port, small, large);
+  }
+
+  private resetRumble(port: JoypadPort): void {
+    this.rumbleMap.fill(0xff, port * 6, port * 6 + 6);
+    this.oldRumble[port] = false;
+    this.setMotors(port, false, 0);
+  }
+
+  private resetPeripheral(port: JoypadPort): void {
+    this.analog[port] = this.analogLocked[port] = this.config[port] = false;
+    this.rumbleMap.fill(0xff, port * 6, port * 6 + 6);
+    this.oldRumble[port] = true;
+  }
+
+  private resetTransaction(): void {
+    this.ack = false;
+    this.response = [];
+    this.sent = [];
+    this.packetIndex = 0;
     this.command = 0;
-    this.rx.push(0xff);
+    this.addressed = false;
+  }
+
+  private acknowledge(): void {
+    this.ack = true;
+    if ((this.ctrl & CTRL_DSRIEN) !== 0) {
+      this.irq = true;
+      this.irqFire(7);
+    }
+  }
+
+  private receive(value: number): void {
+    if (this.rx.length === 8) this.rx[7] = value;
+    else this.rx.push(value);
   }
 }
+

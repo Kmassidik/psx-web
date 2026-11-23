@@ -77,7 +77,7 @@ function decodeStream(m: Mdec, hs: number[], depth: number, signed = false, stp 
   const words = rlWords(padded);
   m.write(decodeCmd(words.length, depth, signed, stp));
   for (const w of words) m.pushWord(w);
-  return new Uint8Array(m.readOutput().slice().buffer);
+  return new Uint8Array(m.drainOutput().slice().buffer);
 }
 
 /** Flat macroblock: Y DC = dc on all four luma blocks, chroma DC = 0. */
@@ -104,16 +104,16 @@ describe("MDEC registers", () => {
     const m = new Mdec();
     m.write((0 << 29) | (2 << 27) | 1234); // depth 2, "word count" 1234
     // no$psx: bits reflected without the minus-1 effect, no parameters expected.
-    expect(m.regs & 0x0000ffff).toBe(0xffff); // none remaining
+    expect(m.regs & 0x0000ffff).toBe(1234); // reflected verbatim, no parameters
     expect((m.regs >>> 25) & 3).toBe(2); // depth copied to STAT.26-25
     m.pushWord(0xdeadbeef); // must not disturb anything
-    expect(m.regs & 0x0000ffff).toBe(0xffff);
+    expect(m.regs & 0x0000ffff).toBe(1234);
     m.writeControl(0x80000000);
     expect(m.regs).toBe(0x80040000);
     const m2 = new Mdec();
     m2.write((5 << 29) | (3 << 27) | 7); // invalid MDEC(5)
     expect((m2.regs >>> 25) & 3).toBe(3);
-    expect(m2.regs & 0x0000ffff).toBe(0xffff);
+    expect(m2.regs & 0x0000ffff).toBe(7);
   });
 
   test("MDEC(2) quant upload: words consumed minus 1, color bit adds 64 bytes", () => {
@@ -144,7 +144,7 @@ describe("MDEC registers", () => {
     // fixed codebook anchor points (EOB {2,2}, ESC {1,6}) + command reflection.
     const m = new Mdec();
     m.write(0xfe06_0000); // raw FE060000 (Test command shape)
-    expect(m.regs & 0x0000ffff).toBe(0xffff); // no parameters expected
+    expect(m.regs & 0x0000ffff).toBe(0); // low command bits reflected
     expect(m.regs & 0x20000000).toBe(0); // not busy
     expect(VLC_EOB).toEqual({ code: 0x2, bits: 2 });
     expect(VLC_ESC).toEqual({ code: 0x1, bits: 6 });
@@ -153,8 +153,18 @@ describe("MDEC registers", () => {
   test("status BUSY and word-count track a decode command", () => {
     const m = new Mdec();
     m.write(decodeCmd(4, 2)); // 4 words still to receive
+    m.writeControl(0x40000000);
+    expect((m.regs & 0x10000000) !== 0).toBe(true);
     expect((m.regs & 0x20000000) !== 0).toBe(true); // BUSY
     expect(m.regs & 0x0000ffff).toBe(3); // minus 1
+    for (let i = 0; i < 3; i++) m.pushWord(0xfe00_fe00);
+    expect(m.regs & 0x0000ffff).toBe(0);
+    expect(m.regs & 0x60000000).toBe(0x60000000); // full and busy on final word
+    expect(m.regs & 0x10000000).toBe(0);
+    m.pushWord(0xfe00_fe00);
+    expect(m.regs & 0x10000000).toBe(0x10000000);
+    expect(m.regs & 0x0000ffff).toBe(0xffff);
+    expect((m.regs & 0x60000000) !== 0).toBe(false);
     m.writeControl(0x80000000); // abort
     expect(m.regs).toBe(0x80040000);
   });
@@ -166,6 +176,35 @@ describe("MDEC registers", () => {
     expect((m.regs & 0x08000000) !== 0).toBe(false); // no output yet
     m.writeControl(0x80000000); // reset clears enables
     expect((m.regs & 0x10000000) !== 0).toBe(false);
+    m.write(decodeCmd(1, 1));
+    expect((m.regs & 0x10000000) !== 0).toBe(false);
+    m.writeControl(0x80000000);
+  });
+
+  test("MDEC0 accepts parameter words through the same port as commands", () => {
+    const m = new Mdec();
+    m.write((2 << 29) | 1);
+    for (const w of quantTableWords(QT_16, QT_16)) m.write(w);
+    m.write(3 << 29);
+    for (const w of scaleTableWords(STANDARD_SCALE_TABLE)) m.write(w);
+    const hs = [(8 << 10) | 8, 0xfe00];
+    m.write(decodeCmd(1, 1));
+    m.write(rlWords(hs)[0]!);
+    const out = m.drainOutput();
+    expect(out.length).toBe(16);
+    expect(Array.from(out)).toEqual(new Array(16).fill(0x90909090));
+    expect((m.regs & 0x80000000) >>> 0).toBe(0x80000000);
+  });
+
+  test("reset aborts a partial transfer and discards later stale data", () => {
+    const m = new Mdec();
+    setupStandard(m);
+    m.write(decodeCmd(2, 1));
+    m.pushWord(0xfe00_2008);
+    m.writeControl(0x80000000);
+    m.pushWord(0xfe00_fe00);
+    expect(m.regs).toBe(0x80040000);
+    expect(m.drainOutput().length).toBe(0);
   });
 });
 
@@ -179,7 +218,7 @@ describe("MDEC single 8x8 block", () => {
     setupStandard(m);
     // q(command)=16, qt=16, DC=+32: val = dc*qt = 512 (≤1023, no saturation),
     // pixel = 128 + val/8 = 128 + 64 = 192 (AAN DC: blk = qt*dc*2^7, out = blk>>10).
-    const out = decodeStream(m, flatMb(32, 16), 2, true);
+    const out = decodeStream(m, flatMb(32, 16), 2, false);
     expect(out.length).toBe(256 * 3);
     for (let px = 0; px < 256; px++) {
       expect(out[px * 3]!).toBe(192); // Cr=Cb=0 → R=G=B=Y
@@ -193,7 +232,7 @@ describe("MDEC single 8x8 block", () => {
     setupStandard(m);
     // pixel signed = round-half-down(dc*qt*128 / 2^10) = round-half-down(dc*qt/8).
     // qt=16: dc=4 → 8.0 → 8; dc=8 → 16; dc=12 → 24; dc=1 → 2.
-    const at = (dc: number): number => decodeStream(m, flatMb(dc, 8), 2, true)[0 * 3 + 1]! - 128;
+    const at = (dc: number): number => decodeStream(m, flatMb(dc, 8), 2, false)[0 * 3 + 1]! - 128;
     expect(at(1)).toBe(2);
     expect(at(4)).toBe(8);
     expect(at(8)).toBe(16);
@@ -205,7 +244,7 @@ describe("MDEC single 8x8 block", () => {
     expect(at(53)).toBe(106);
   });
 
-  test("unsigned output adds 80h to the signed pixel (mono xor rule for RGB)", () => {
+  test("unsigned mono output adds 80h to the signed pixel", () => {
     const m = new Mdec();
     setupStandard(m);
     // flatMb(0, 8): all channels 0 signed → 128 unsigned either way; use a DC
@@ -284,8 +323,8 @@ describe("MDEC single 8x8 block", () => {
     setupStandard(m);
     // run=62 → k=63 OK; another run pushes k>63 → break. Two-AC variant would
     // put energy at higher frequencies; here it must equal the DC-only decode.
-    const withRun = decodeStream(m, [(8 << 10) | 100, (62 << 10) | 7, (0 << 10) | 9, 0xfe00], 2, true);
-    const dcOnly = decodeStream(m, [(8 << 10) | 100, 0xfe00], 2, true);
+    const withRun = decodeStream(m, [(8 << 10) | 100, (62 << 10) | 7, (0 << 10) | 9, 0xfe00], 2, false);
+    const dcOnly = decodeStream(m, [(8 << 10) | 100, 0xfe00], 2, false);
     expect(Array.from(withRun)).toEqual(Array.from(dcOnly));
   });
 
@@ -293,8 +332,8 @@ describe("MDEC single 8x8 block", () => {
     const m = new Mdec();
     setupStandard(m);
     const padded = [0xfe00, 0xfe00, ...flatMb(64, 16)];
-    const plain = decodeStream(m, flatMb(64, 16), 2, true);
-    const out = decodeStream(m, padded, 2, true);
+    const plain = decodeStream(m, flatMb(64, 16), 2, false);
+    const out = decodeStream(m, padded, 2, false);
     // The padded stream has the same first macroblock output.
     expect(Array.from(out.subarray(0, 768))).toEqual(Array.from(plain.subarray(0, 768)));
   });
@@ -302,8 +341,8 @@ describe("MDEC single 8x8 block", () => {
   test("EOB pads the rest of the block with zero ACs", () => {
     const m = new Mdec();
     setupStandard(m);
-    const withEob = decodeStream(m, [(8 << 10) | 100, (1 << 10) | 20, (2 << 10) | 5, 0xfe00], 2, true);
-    const without = decodeStream(m, [(8 << 10) | 100, (1 << 10) | 20, (2 << 10) | 5], 2, true);
+    const withEob = decodeStream(m, [(8 << 10) | 100, (1 << 10) | 20, (2 << 10) | 5, 0xfe00], 2, false);
+    const without = decodeStream(m, [(8 << 10) | 100, (1 << 10) | 20, (2 << 10) | 5], 2, false);
     expect(Array.from(withEob)).toEqual(Array.from(without));
   });
 
@@ -313,11 +352,11 @@ describe("MDEC single 8x8 block", () => {
     // DC field is 10-bit signed (-512..511); qt=16 → |val| = |dc*16|.
     // dc=+64 → val 1024 > 1023 → clamped to 1023 → blk = scaler(1023*65536,9)
     // = 130944 → pixel 127.875 → half-down 127 → +128 = 255.
-    const out = decodeStream(m, flatMb(64, 16), 2, true);
+    const out = decodeStream(m, flatMb(64, 16), 2, false);
     expect(out[1]).toBe(255);
     // dc=-64 → val -1024 (already at the clamp edge) → blk -131072 → pixel
     // -128 → clamp8 saturates at 0.
-    const neg = decodeStream(m, flatMb(-64, 16), 2, true);
+    const neg = decodeStream(m, flatMb(-64, 16), 2, false);
     expect(neg[1]).toBe(0);
   });
 
@@ -335,8 +374,64 @@ describe("MDEC single 8x8 block", () => {
   test("mono 4bpp: two pixels per byte, low nibble first", () => {
     const m = new Mdec();
     setupStandard(m);
-    const out = decodeStream(m, [(8 << 10) | 0, 0xfe00], 0, true);
+    const hs = [(8 << 10) | 0, 20, 0xfe00];
+    const out = decodeStream(m, hs, 0, true);
+    const bytes = decodeStream(m, hs, 1, true);
     expect(out.length).toBe(32);
+    for (let i = 0; i < 64; i++) {
+      expect((out[i >> 1]! >>> ((i & 1) * 4)) & 15).toBe((bytes[i]! >>> 4) & 15);
+    }
+  });
+
+  test("AC dequantization saturates both signs before the AAN transform", () => {
+    const m = new Mdec();
+    setupStandard(m);
+    const at = (level: number): Uint8Array =>
+      decodeStream(m, [(63 << 10) | 0, level & 0x3ff, 0xfe00], 1, true);
+    expect(Array.from(at(511))).toEqual(Array.from(at(400)));
+    expect(Array.from(at(-512))).toEqual(Array.from(at(-400)));
+  });
+
+  test("output rounding: 8bpp ties down while 15bpp ties up", () => {
+    const m = new Mdec();
+    const q4 = new Uint8Array(64).fill(4);
+    m.write((2 << 29) | 1);
+    for (const w of quantTableWords(q4, q4)) m.pushWord(w);
+    m.write(3 << 29);
+    for (const w of scaleTableWords(STANDARD_SCALE_TABLE)) m.pushWord(w);
+    // DC*qt=4 gives signed Y=+0.5; negating it gives -0.5.
+    expect(decodeStream(m, [(8 << 10) | 1, 0xfe00], 1, true)[0]).toBe(0);
+    expect(decodeStream(m, [(8 << 10) | 0x3ff, 0xfe00], 1, true)[0]).toBe(0xff);
+    // At 15bpp, signed Y=4 is half of one 5-bit channel step (Y/8).
+    const pos = decodeStream(m, flatMb(8, 8), 3, true);
+    const neg = decodeStream(m, flatMb(-8, 8), 3, true);
+    expect(pos[0]! | (pos[1]! << 8)).toBe(0x0421); // +1 in R/G/B
+    expect(neg[0]! | (neg[1]! << 8)).toBe(0); // exact half rounds toward +infinity
+  });
+
+  test("an uploaded nonstandard scale matrix uses the real IDCT exactly once", () => {
+    const m = new Mdec();
+    setupStandard(m);
+    const scale = new Int16Array(STANDARD_SCALE_TABLE);
+    scale[63] = scale[63]! ^ 1; // custom table, but identical after hardware >>3
+    m.write(3 << 29);
+    for (const w of scaleTableWords(scale)) m.pushWord(w);
+    const out = decodeStream(m, flatMb(32, 16), 2);
+    expect(out.length).toBe(768);
+    for (let px = 0; px < 256; px++) expect(out[px * 3 + 1]).toBe(192);
+    const negative = decodeStream(m, flatMb(-32, 16), 2);
+    for (let px = 0; px < 256; px++) expect(negative[px * 3 + 1]).toBe(64);
+  });
+
+  test("no scale table is usable until MDEC(3); reset preserves uploaded tables", () => {
+    const m = new Mdec();
+    m.write(2 << 29);
+    for (const w of quantTableWords(QT_16, new Uint8Array(64)).slice(0, 16)) m.pushWord(w);
+    const blank = decodeStream(m, [(8 << 10) | 8, 0xfe00], 1);
+    expect(Array.from(blank)).toEqual(new Array(64).fill(128));
+    setupStandard(m);
+    m.writeControl(0x80000000);
+    expect(decodeStream(m, [(8 << 10) | 8, 0xfe00], 1)[0]).toBe(144);
   });
 });
 
@@ -345,20 +440,42 @@ describe("MDEC single 8x8 block", () => {
 // ---------------------------------------------------------------------------
 
 describe("MDEC colored macroblock golden vectors", () => {
-  test("flat gray: every pixel 192 exact (DC=32,qt=16) in RGB24 and RGBA modes", () => {
+  test("flat gray: exact RGB24 and packed RGB555 output", () => {
     const m = new Mdec();
     setupStandard(m);
-    for (const depth of [2, 3]) {
-      const out = decodeStream(m, flatMb(32, 16), depth, true);
-      const stride = depth === 2 ? 3 : 4;
-      expect(out.length).toBe(256 * stride);
-      for (let px = 0; px < 256; px++) {
-        expect(out[px * stride]!).toBe(192);
-        expect(out[px * stride + 1]!).toBe(192);
-        expect(out[px * stride + 2]!).toBe(192);
-        if (depth === 3) expect(out[px * 4 + 3]!).toBe(0);
-      }
+    const rgb = decodeStream(m, flatMb(32, 16), 2);
+    expect(rgb.length).toBe(256 * 3);
+    for (let px = 0; px < 256; px++) {
+      expect(rgb[px * 3]).toBe(192);
+      expect(rgb[px * 3 + 1]).toBe(192);
+      expect(rgb[px * 3 + 2]).toBe(192);
     }
+    const rgb15 = decodeStream(m, flatMb(32, 16), 3);
+    expect(rgb15.length).toBe(256 * 2);
+    for (let px = 0; px < 256; px++) {
+      expect(rgb15[px * 2]! | (rgb15[px * 2 + 1]! << 8)).toBe(0x6318); // 24,24,24; LE bytes 18h,63h
+    }
+  });
+
+  test("signed color output suppresses the unsigned bias in 24bpp and 15bpp", () => {
+    const m = new Mdec();
+    setupStandard(m);
+    const rgb = decodeStream(m, flatMb(32, 16), 2, true);
+    expect(Array.from(rgb.subarray(0, 3))).toEqual([64, 64, 64]);
+    const rgb15 = decodeStream(m, flatMb(32, 16), 3, true);
+    expect(rgb15[0]! | (rgb15[1]! << 8)).toBe(0x2108); // signed 8,8,8
+  });
+
+  test("negative chroma remains signed through color conversion", () => {
+    const m = new Mdec();
+    setupStandard(m);
+    const hs = [
+      (16 << 10) | 16, 0xfe00,
+      (16 << 10) | ((-8) & 0x3ff), 0xfe00,
+      ...Array.from({ length: 4 }, () => [(16 << 10) | 32, 0xfe00]).flat(),
+    ];
+    expect(Array.from(decodeStream(m, hs, 2).subarray(0, 3))).toEqual([237, 175, 164]);
+    expect(Array.from(decodeStream(m, hs, 2, true).subarray(0, 3))).toEqual([109, 47, 36]);
   });
 
   test("flat chroma macroblock: hand-computed RGB exact per channel", () => {
@@ -373,7 +490,7 @@ describe("MDEC colored macroblock golden vectors", () => {
       (16 << 10) | ((-8) & 0x3ff), 0xfe00, // Cb: dc=-8
       ...Array.from({ length: 4 }, () => [(16 << 10) | 32, 0xfe00]).flat(), // Y: dc=32
     ];
-    const out = decodeStream(m, hs, 2, true);
+    const out = decodeStream(m, hs, 2, false);
     const r = out[0]!;
     const g = out[1]!;
     const b = out[2]!;
@@ -387,20 +504,17 @@ describe("MDEC colored macroblock golden vectors", () => {
     }
   });
 
-  test("STP bit sets RGBA alpha only — no blending (documented skip)", () => {
+  test("STP sets RGB555 bit 15 without changing color channels", () => {
     const m = new Mdec();
     setupStandard(m);
     const hs = flatMb(32, 16);
-    const m2 = new Mdec();
-    setupStandard(m2);
     const withStp = decodeStream(m, hs, 3, false, true);
     const noStp = decodeStream(m, hs, 3, false, false);
     for (let px = 0; px < 256; px++) {
-      expect(withStp[px * 4]!).toBe(noStp[px * 4]!);
-      expect(withStp[px * 4 + 1]!).toBe(noStp[px * 4 + 1]!);
-      expect(withStp[px * 4 + 2]!).toBe(noStp[px * 4 + 2]!);
-      expect(withStp[px * 4 + 3]!).toBe(0x80);
-      expect(noStp[px * 4 + 3]!).toBe(0);
+      const a = withStp[px * 2]! | (withStp[px * 2 + 1]! << 8);
+      const b = noStp[px * 2]! | (noStp[px * 2 + 1]! << 8);
+      expect(a).toBe(0xe318);
+      expect(b).toBe(0x6318);
     }
     // STAT.23 reflects CMD.25 while a decode command with STP is resident.
     const m3 = new Mdec();
@@ -422,7 +536,7 @@ describe("MDEC colored macroblock golden vectors", () => {
       (16 << 10) | 0, 0xfe00, // Y3 (bottom-left)
       (16 << 10) | 48, 0xfe00, // Y4 (bottom-right)
     ];
-    const out = decodeStream(m, hs, 2, true);
+    const out = decodeStream(m, hs, 2, false);
     const lum = (x: number, y: number): number => out[((y * 16 + x) * 3 + 1)]!;
     expect(lum(0, 0)).toBe(lum(7, 7)); // quadrant 1 flat
     expect(lum(8, 0)).toBe(lum(15, 7)); // quadrant 2 flat
@@ -441,7 +555,7 @@ describe("MDEC colored macroblock golden vectors", () => {
     const m = new Mdec();
     setupStandard(m);
     const hs = [...flatMb(32, 16), ...flatMb(-32, 16)]; // bright (192) then dark (64)
-    const out = decodeStream(m, hs, 2, true);
+    const out = decodeStream(m, hs, 2, false);
     expect(out.length).toBe(512 * 3);
     expect(out[0 * 3 + 1]).toBe(192);
     expect(out[256 * 3 + 1]).toBe(64);
@@ -467,10 +581,58 @@ describe("MDEC colored macroblock golden vectors", () => {
     const m = new Mdec();
     setupStandard(m);
     for (const dc of [-60, -23, 0, 31, 63]) {
-      const out = decodeStream(m, flatMb(dc, 24), 2, true);
+      const out = decodeStream(m, flatMb(dc, 24), 2, false);
       const v = out[0]!;
       for (let px = 1; px < 256; px++) expect(out[px * 3]!).toBe(v);
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 3b. Output FIFO and status consumption
+// ---------------------------------------------------------------------------
+
+describe("MDEC output FIFO", () => {
+  test("each CPU/DMA read pops one word and preserves following macroblocks", () => {
+    const m = new Mdec();
+    setupStandard(m);
+    const hs = [...flatMb(32, 16), ...flatMb(-32, 16)];
+    m.write(decodeCmd(rlWords(hs).length, 2));
+    for (const w of rlWords(hs)) m.pushWord(w);
+    m.writeControl(0x20000000);
+    expect(m.regs & 0x88000000).toBe(0x08000000); // nonempty and DREQ1
+    expect((m.regs >>> 16) & 7).toBe(0); // Y1 is the first pending output block
+    expect(Array.from(m.readOutput())).toEqual([0xc0c0c0c0]);
+    expect(Array.from(m.readOutput())).toEqual([0xc0c0c0c0]);
+    for (let i = 2; i < 192; i++) expect(m.readOutput()[0]).toBe(0xc0c0c0c0);
+    expect(Array.from(m.readOutput())).toEqual([0x40404040]);
+    expect(m.drainOutput().length).toBe(191);
+    expect((m.regs & 0x88000000) >>> 0).toBe(0x80000000); // empty, request cleared
+    expect((m.regs >>> 16) & 7).toBe(3); // no output: last processed block Y4
+    expect(m.readOutput().length).toBe(0);
+  });
+
+  test("a no-op command neither hides nor discards pending output", () => {
+    const m = new Mdec();
+    setupStandard(m);
+    const hs = flatMb(32, 16);
+    m.write(decodeCmd(rlWords(hs).length, 2));
+    for (const w of rlWords(hs)) m.pushWord(w);
+    m.write(0);
+    expect(m.regs & 0x80000000).toBe(0);
+    expect(m.readOutput()[0]).toBe(0xc0c0c0c0);
+  });
+
+  test("reset interrupts an output drain and discards the remaining FIFO", () => {
+    const m = new Mdec();
+    setupStandard(m);
+    const hs = flatMb(32, 16);
+    m.write(decodeCmd(rlWords(hs).length, 3));
+    for (const w of rlWords(hs)) m.pushWord(w);
+    expect(m.readOutput().length).toBe(1);
+    m.writeControl(0x80000000);
+    expect(m.readOutput().length).toBe(0);
+    expect(m.regs).toBe(0x80040000);
   });
 });
 
@@ -679,18 +841,6 @@ describe("MDEC decode16 / encode16 (BS bitstream)", () => {
         bw.put(raw, size);
       }
     };
-    const dcSizeOf = (delta: number): number => {
-      for (let s = 0; s < 9; s++) {
-        const half = 1 << (s - 1);
-        if (delta === 0) return 0;
-        if (delta > 0 && delta <= half) return s;
-        if (delta < 0 && delta >= -half - (1 - 1) - (half - 1)) {
-          // range: -(2^s - 1) .. -1
-          if (delta >= -(2 ** s - 1)) return s;
-        }
-      }
-      return 0;
-    };
     const luma = [{ code: 0b100, length: 3 }, { code: 0b00, length: 2 }, { code: 0b01, length: 2 },
       { code: 0b101, length: 3 }, { code: 0b110, length: 3 }, { code: 0b1110, length: 4 },
       { code: 0b11110, length: 5 }, { code: 0b111110, length: 6 }, { code: 0b1111110, length: 7 }];
@@ -709,7 +859,7 @@ describe("MDEC decode16 / encode16 (BS bitstream)", () => {
       putDelta(luma, 0, 0); // Y2..Y4: delta 0, size 0
       bw.put(VLC_EOB.code, VLC_EOB.bits);
     }
-    bw.put(0x1ff, 10);
+    bw.put(0x3ff, 10); // v3 End of Frame
     bw.finish();
     const out = new Uint8Array(8 + bw.bytes.length);
     const dv = new DataView(out.buffer);
@@ -729,6 +879,7 @@ describe("MDEC decode16 / encode16 (BS bitstream)", () => {
     expect(rl[6]).toBe(q | 16);
     expect(rl[8]).toBe(q | 16);
     expect(rl[10]).toBe(q | 16);
+    for (let i = 12; i < rl.length; i++) expect(rl[i]).toBe(0xfe00);
   });
 
   test("garbage magic / version returns empty", () => {
@@ -774,13 +925,13 @@ describe("MDEC decode16 / encode16 (BS bitstream)", () => {
     const bs = mA.encode16(raw);
     const rl = mA.decode16(bs);
     const wordsA = rlWords(hs);
-    mB.write(decodeCmd(wordsA.length, 2, true));
+    mB.write(decodeCmd(wordsA.length, 2, false));
     for (const w of wordsA) mB.pushWord(w);
-    const outA = new Uint8Array(mB.readOutput().slice().buffer);
+    const outA = new Uint8Array(mB.drainOutput().slice().buffer);
     const wordsB = rlWords(Array.from(rl.subarray(0, hs.length)));
-    mA.write(decodeCmd(wordsB.length, 2, true));
+    mA.write(decodeCmd(wordsB.length, 2, false));
     for (const w of wordsB) mA.pushWord(w);
-    const outB = new Uint8Array(mA.readOutput().slice().buffer);
+    const outB = new Uint8Array(mA.drainOutput().slice().buffer);
     expect(Array.from(outB)).toEqual(Array.from(outA));
   });
 });

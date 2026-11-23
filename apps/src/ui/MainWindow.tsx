@@ -1,68 +1,36 @@
-/**
- * window_main — React clone of the extracted ePSXe GTK blueprint
- * (knowledge-base/ui-blueprint/epsxe-gtk-interface-extracted.ui, id=window_main).
- * Menu labels are the blueprint's, verbatim.
- * Phase 1: File/Run PS-EXE path boots the machine and blits frames via rAF.
- */
-import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
+/** Native-resolution, client-side PS1 window and emulator lifecycle. */
+import { useCallback, useEffect, useRef, useState } from "react";
 import { parsePsExe } from "../core/loader/psexe";
 import { createMdfSectorProvider } from "../core/loader/mdf";
 import { readIsoFile } from "../core/loader/iso9660";
 import { Machine } from "../core/machine";
-import { setConfig, setState, useApp } from "./store";
+import { SpuAudioSink } from "../core/spu-audio";
+import { bindAudioUnlock } from "./audio";
+import { PAD_BUTTONS, type PadButton, type PsxConfig } from "../state/config";
+import { getState, setConfig, setState, useApp } from "./store";
+import { DisplaySurface } from "./DisplaySurface";
+import { MainMenu, type DialogName, type FileMode } from "./MainMenu";
 import { VideoConfigDialog } from "./dialogs/VideoConfigDialog";
 import { GamepadConfigDialog } from "./dialogs/GamepadConfigDialog";
 import { MemcardDialog } from "./dialogs/MemcardDialog";
+import { Dialog } from "./dialogs/Dialog";
 
-type FileMode = "auto" | "exe" | "bios";
-type DialogName = "video" | "gamepad" | "memcard";
-
-const PAD_BITS: Record<string, number> = {
-  x: 0x0040, // Cross
-  Enter: 0x0800, // Start
-  ArrowUp: 0x1000,
-  ArrowRight: 0x2000,
-  ArrowDown: 0x4000,
-  ArrowLeft: 0x8000,
+const PAD_BITS: Record<PadButton, number> = {
+  Select: 0x0001, L3: 0x0002, R3: 0x0004, Start: 0x0008,
+  Up: 0x0010, Right: 0x0020, Down: 0x0040, Left: 0x0080,
+  L2: 0x0100, R2: 0x0200, L1: 0x0400, R1: 0x0800,
+  Triangle: 0x1000, Circle: 0x2000, Cross: 0x4000, Square: 0x8000,
 };
 
-interface MenuItemProps {
-  label: string;
-  action?: () => void;
-  checked?: boolean;
-  disabled?: boolean;
-  children?: ReactNode;
+interface BootSource {
+  buffer: ArrayBuffer;
+  name: string;
+  mode: FileMode;
 }
 
-function MenuItem({ label, action, checked, disabled, children }: MenuItemProps) {
-  const submenu = children !== undefined;
-  return (
-    <li className={submenu ? "menu-has-submenu" : ""} role="none">
-      <button
-        type="button"
-        className="menu-item"
-        role={checked === undefined ? "menuitem" : "menuitemcheckbox"}
-        aria-checked={checked}
-        aria-haspopup={submenu || undefined}
-        data-command={action ? "" : undefined}
-        disabled={disabled}
-        onClick={action}
-      >
-        <span className="menu-mark" aria-hidden="true">{checked ? "✓" : ""}</span>
-        <span className="menu-label">{label}</span>
-        {submenu && <span className="submenu-arrow" aria-hidden="true">▶</span>}
-      </button>
-      {submenu && <ul className="menu-popup submenu" role="menu">{children}</ul>}
-    </li>
-  );
+function releasePads(machine: Machine | null): void {
+  if (machine) machine.pads.pad1 = machine.pads.pad2 = 0xffff;
 }
-
-function MenuSeparator() {
-  return <li className="menu-separator" role="separator"><hr /></li>;
-}
-
-const stateSlots = [1, 2, 3, 4, 5];
-const overclockRates = [1, 1.5, 2, 3, 4];
 
 export function MainWindow() {
   const run = useApp((s) => s.run);
@@ -71,29 +39,102 @@ export function MainWindow() {
   const config = useApp((s) => s.config);
   const [loaded, setLoaded] = useState<string | null>(null);
   const [dragOver, setDragOver] = useState(false);
-  const [openMenu, setOpenMenu] = useState<string | null>(null);
   const [dialog, setDialog] = useState<DialogName | null>(null);
+  const [gamepadPort, setGamepadPort] = useState<1 | 2>(1);
+  const [fullscreen, setFullscreen] = useState(false);
+  const rootRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const fileInput = useRef<HTMLInputElement>(null);
   const fileMode = useRef<FileMode>("auto");
   const machineRef = useRef<Machine | null>(null);
+  const bootSourceRef = useRef<BootSource | null>(null);
+  const configRef = useRef<PsxConfig>(config);
   const rafRef = useRef(0);
+  const audioRef = useRef<SpuAudioSink | null>(null);
+  if (!audioRef.current) audioRef.current = new SpuAudioSink({ volume: config.AudioVolume });
+  const audio = audioRef.current;
+  const [muted, setMuted] = useState(false);
+  const redrawRef = useRef<() => void>(() => {});
+  configRef.current = config;
+
+  const cancelLoop = useCallback(() => {
+    cancelAnimationFrame(rafRef.current);
+    rafRef.current = 0;
+  }, []);
+
+  const redraw = useCallback(() => redrawRef.current(), []);
+
+  const startLoop = useCallback((name: string) => {
+    cancelLoop();
+    const machine = machineRef.current;
+    const canvas = canvasRef.current;
+    if (!machine || !canvas) return;
+    const nativeCanvas = document.createElement("canvas");
+    const nativeContext = nativeCanvas.getContext("2d");
+    const context = canvas.getContext("2d");
+    let image: ImageData | null = null;
+    let frames = 0;
+    let lastFps = performance.now();
+
+    const present = () => {
+      if (machineRef.current !== machine || !nativeContext || !context) return;
+      const frame = machine.gpu.composeDisplayFrame();
+      if (nativeCanvas.width !== frame.width || nativeCanvas.height !== frame.height) {
+        nativeCanvas.width = frame.width;
+        nativeCanvas.height = frame.height;
+        image = nativeContext.createImageData(frame.width, frame.height);
+      }
+      image ??= nativeContext.createImageData(frame.width, frame.height);
+      image.data.set(frame.rgba);
+      nativeContext.putImageData(image, 0, 0);
+      context.imageSmoothingEnabled = configRef.current.BilinearFilter;
+      context.drawImage(nativeCanvas, 0, 0, canvas.width, canvas.height);
+    };
+    redrawRef.current = present;
+
+    const tick = () => {
+      if (machineRef.current !== machine || getState().run !== "running") return;
+      // NTSC console-rate budget: 33.8688 MHz / 60 ≈ 560k cycles per presented frame.
+      for (let slice = 0; slice < 28; slice++) machine.runSlice(20_000);
+      present();
+      frames++;
+      const now = performance.now();
+      if (now - lastFps >= 1000) {
+        const fps = configRef.current.ShowFPS ? ` · ${frames} fps` : "";
+        setState({ statusLine: `running ${name}${fps}` });
+        frames = 0;
+        lastFps = now;
+      }
+      rafRef.current = requestAnimationFrame(tick);
+    };
+    present();
+    rafRef.current = requestAnimationFrame(tick);
+  }, [cancelLoop]);
 
   const boot = useCallback((buf: ArrayBuffer, name: string, mode: FileMode) => {
+    let bootStage = "PS-X EXE";
+    cancelLoop();
+    releasePads(machineRef.current);
+    audio.reset();
+    void audio.resume();
     try {
       const bytes = new Uint8Array(buf);
       // BIOS dump (512 KiB) vs PS-EXE: size discriminator (load_bios spec).
       if (bytes.byteLength === 512 * 1024 && (mode === "bios" || name.toLowerCase().includes("bios"))) {
-        const m = machineRef.current ?? new Machine();
+        const m = new Machine();
+        m.setAudioSink(audio);
         m.loadBios(bytes);
         machineRef.current = m;
+        bootSourceRef.current = { buffer: buf, name, mode };
         setLoaded(name);
-        setState({ run: "running", lastError: "", statusLine: `BIOS ${name} loaded — drop a PS-X EXE or CUE/BIN next` });
+        setState({ run: "running", lastError: "", statusLine: `BIOS ${name} loaded` });
+        startLoop(name);
         return;
       }
       let exeBytes = bytes;
-      let bootStage = "PS-X EXE";
+      bootStage = "PS-X EXE";
       const m = new Machine();
+      m.setAudioSink(audio);
       if (name.toLowerCase().endsWith(".mdf")) {
         const provider = createMdfSectorProvider(bytes);
         m.setSectorProvider(provider);
@@ -112,93 +153,163 @@ export function MainWindow() {
       const exe = parsePsExe(exeBytes);
       m.loadExe(exeBytes, exe.pc0, exe.t_addr, exe.data);
       machineRef.current = m;
+      bootSourceRef.current = { buffer: buf, name, mode };
       setLoaded(name);
       setState({
         run: "running",
         lastError: "",
-        statusLine: `running ${name} pc=0x${exe.pc0.toString(16)} (${(exe.t_size / 1024).toFixed(0)} KiB)`,
+        statusLine: `running ${name} (${(exe.t_size / 1024).toFixed(0)} KiB)`,
       });
-
-      // rAF loop: fixed instruction slice per frame; pixels bypass React.
-      const canvas = canvasRef.current;
-      const ctx = canvas?.getContext("2d") ?? null;
-      const img = ctx ? ctx.createImageData(640, 480) : null;
-      let frames = 0;
-      let lastFps = performance.now();
-      const tick = () => {
-        const machine = machineRef.current;
-        if (!machine) return;
-        machine.runSlice(20_000); // ~0.33 ms of emulated CPU per rAF (placeholder clock)
-        machine.gpu.composeFrame();
-        if (img && ctx) {
-          img.data.set(machine.gpu.screen);
-          ctx.putImageData(img, 0, 0);
-        }
-        frames++;
-        const now = performance.now();
-        if (now - lastFps >= 1000) {
-          setState({ statusLine: `running ${name} · ${frames} fps · pc=0x${(machine.cpu.pc >>> 0).toString(16)}` });
-          frames = 0;
-          lastFps = now;
-        }
-        rafRef.current = requestAnimationFrame(tick);
-      };
-      cancelAnimationFrame(rafRef.current);
-      rafRef.current = requestAnimationFrame(tick);
+      startLoop(name);
     } catch (e) {
+      machineRef.current = null;
+      bootSourceRef.current = null;
+      redrawRef.current = () => {};
+      setLoaded(null);
       setState({ run: "error", lastError: `${bootStage}: ${String(e)}`, statusLine: "load failed" });
+    }
+  }, [cancelLoop, startLoop]);
+
+  const pause = useCallback(() => {
+    if (getState().run !== "running" || !loaded) return;
+    cancelLoop();
+    releasePads(machineRef.current);
+    audio.pause();
+    setState({ run: "paused", statusLine: `paused ${loaded}` });
+  }, [cancelLoop, loaded]);
+
+  const resume = useCallback(() => {
+    if (getState().run !== "paused" || !loaded || !machineRef.current) return;
+    void audio.resume();
+    setState({ run: "running", lastError: "", statusLine: `running ${loaded}` });
+    startLoop(loaded);
+  }, [loaded, startLoop]);
+
+  const reset = useCallback(() => {
+    const source = bootSourceRef.current;
+    if (source) boot(source.buffer, source.name, source.mode);
+  }, [boot]);
+
+  const stop = useCallback(() => {
+    cancelLoop();
+    releasePads(machineRef.current);
+    audio.pause();
+    machineRef.current = null;
+    bootSourceRef.current = null;
+    redrawRef.current = () => {};
+    const canvas = canvasRef.current;
+    canvas?.getContext("2d")?.clearRect(0, 0, canvas.width, canvas.height);
+    setLoaded(null);
+    setState({ run: "idle", lastError: "", statusLine: "ready" });
+  }, [cancelLoop]);
+
+  const toggleFullscreen = useCallback(async () => {
+    try {
+      if (document.fullscreenElement) await document.exitFullscreen();
+      else if (rootRef.current?.requestFullscreen) await rootRef.current.requestFullscreen();
+      else throw new Error("Fullscreen API unavailable");
+      setState({ lastError: "" });
+    } catch (error) {
+      setState({ lastError: `Fullscreen request failed: ${String(error)}` });
     }
   }, []);
 
   useEffect(() => {
+    const onFullscreen = () => setFullscreen(document.fullscreenElement === rootRef.current);
+    document.addEventListener("fullscreenchange", onFullscreen);
+    onFullscreen();
+    return () => document.removeEventListener("fullscreenchange", onFullscreen);
+  }, []);
+
+  useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape") setOpenMenu(null);
-      const bit = PAD_BITS[event.key];
-      if (bit && machineRef.current) {
+      if (event.key === "F11" && !event.ctrlKey && !event.metaKey && !event.altKey) {
         event.preventDefault();
-        machineRef.current.pads.pad1 &= ~bit;
+        void toggleFullscreen();
+      }
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [toggleFullscreen]);
+
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      const target = event.target as HTMLElement | null;
+      const editing = target?.closest("input, select, textarea, [contenteditable=true], .menu-bar, .dialog-backdrop");
+      if (dialog || editing || event.ctrlKey || event.metaKey || event.altKey) return;
+      for (const [port, bindings, enabled] of [
+        [1, config.Pad1Bindings, config.PadType1 !== 0],
+        [2, config.Pad2Bindings, config.PadType2 !== 0],
+      ] as const) {
+        const button = PAD_BUTTONS.find((name) => bindings[name] !== "" && bindings[name] === event.code);
+        if (!button || !enabled) continue;
+        event.preventDefault();
+        if (machineRef.current) {
+          if (port === 1) machineRef.current.pads.pad1 &= ~PAD_BITS[button];
+          else machineRef.current.pads.pad2 &= ~PAD_BITS[button];
+        }
       }
     };
     const onKeyUp = (event: KeyboardEvent) => {
-      const bit = PAD_BITS[event.key];
-      if (bit && machineRef.current) machineRef.current.pads.pad1 |= bit;
+      for (const [port, bindings] of [[1, config.Pad1Bindings], [2, config.Pad2Bindings]] as const) {
+        const button = PAD_BUTTONS.find((name) => bindings[name] !== "" && bindings[name] === event.code);
+        if (!button || !machineRef.current) continue;
+        if (port === 1) machineRef.current.pads.pad1 |= PAD_BITS[button];
+        else machineRef.current.pads.pad2 |= PAD_BITS[button];
+      }
     };
+    const onBlur = () => releasePads(machineRef.current);
     window.addEventListener("keydown", onKeyDown);
     window.addEventListener("keyup", onKeyUp);
+    window.addEventListener("blur", onBlur);
     return () => {
       window.removeEventListener("keydown", onKeyDown);
       window.removeEventListener("keyup", onKeyUp);
-      cancelAnimationFrame(rafRef.current);
+      window.removeEventListener("blur", onBlur);
+      releasePads(machineRef.current);
     };
-  }, []);
+  }, [config.Pad1Bindings, config.Pad2Bindings, config.PadType1, config.PadType2, dialog]);
 
-  const onPick = useCallback(
-    (files: FileList | null, mode: FileMode) => {
-      const file = files?.[0];
-      if (!file) return;
-      file.arrayBuffer().then((buf) => boot(buf, file.name, mode));
-    },
-    [boot],
-  );
+  useEffect(() => {
+    const unbind = bindAudioUnlock(audio, window);
+    return () => {
+      unbind();
+      machineRef.current?.setAudioSink(null);
+      audio.dispose();
+      cancelLoop();
+    };
+  }, [audio, cancelLoop]);
+
+  useEffect(() => audio.setVolume(config.AudioVolume), [audio, config.AudioVolume]);
+  useEffect(() => audio.setMuted(muted), [audio, muted]);
+
+  const onPick = useCallback((files: FileList | null, mode: FileMode) => {
+    const file = files?.[0];
+    if (!file) return;
+    file.arrayBuffer().then((buf) => boot(buf, file.name, mode)).catch((error) => {
+      cancelLoop();
+      setState({ run: "error", lastError: `File read: ${String(error)}`, statusLine: "load failed" });
+    });
+  }, [boot, cancelLoop]);
 
   const openFile = (mode: FileMode) => {
     fileMode.current = mode;
     const input = fileInput.current;
     if (!input) return;
-    input.accept = mode === "bios" ? ".bin,.rom" : mode === "exe" ? ".exe,.psexe,.psx" : ".exe,.bin,.psexe,.psx";
+    input.accept = mode === "bios" ? ".bin,.rom" : mode === "exe" ? ".exe,.bin,.psexe,.psx" : ".exe,.bin,.psexe,.psx,.mdf";
     input.value = "";
     input.click();
   };
 
-  const openDialog = (name: DialogName) => {
-    setOpenMenu(null);
+  const openDialog = (name: DialogName, padPort: 1 | 2 = 1) => {
+    setGamepadPort(padPort);
     setDialog(name);
   };
 
   return (
     <div
+      ref={rootRef}
       className={`epsxe-window${dragOver ? " is-dragging" : ""}`}
-      onClick={() => setOpenMenu(null)}
       onDragOver={(event) => { event.preventDefault(); setDragOver(true); }}
       onDragLeave={() => setDragOver(false)}
       onDrop={(event) => {
@@ -208,244 +319,90 @@ export function MainWindow() {
       }}
     >
       <header className="window-titlebar">ePSXe</header>
-      <nav
-        className="menu-bar"
-        aria-label="ePSXe main menu"
-        onClick={(event) => {
-          event.stopPropagation();
-          if ((event.target as HTMLElement).closest("[data-command]")) setOpenMenu(null);
-        }}
-      >
-        <div className="top-menu">
-          <button
-            type="button"
-            className={`menu-top${openMenu === "File" ? " is-open" : ""}`}
-            aria-expanded={openMenu === "File"}
-            aria-haspopup="true"
-            onClick={(event) => {
-              event.stopPropagation();
-              setOpenMenu(openMenu === "File" ? null : "File");
-            }}
-            onMouseEnter={() => { if (openMenu) setOpenMenu("File"); }}
-          >File</button>
-          {openMenu === "File" && (
-            <ul className="menu-popup" role="menu">
-              <MenuItem label="Run CD-ROM" disabled />
-              <MenuItem label="Run ISO" disabled />
-              <MenuItem label="Run PS-EXE" action={() => openFile("exe")} />
-              <MenuItem label="Run BIOS" action={() => openFile("bios")} />
-              <MenuSeparator />
-              <MenuItem label="Open Gamelist" disabled />
-              <MenuSeparator />
-              <MenuItem label="Local Netplay">
-                <MenuItem label="Player 1" disabled />
-                <MenuItem label="Player 2" disabled />
-              </MenuItem>
-              <MenuSeparator />
-              <MenuItem label="Change Disc">
-                <MenuItem label="CD-ROM" disabled />
-                <MenuItem label="ISO" disabled />
-              </MenuItem>
-              <MenuSeparator />
-              <MenuItem label="Exit" disabled />
-            </ul>
-          )}
-        </div>
-
-        <div className="top-menu">
-          <button
-            type="button"
-            className={`menu-top${openMenu === "Run" ? " is-open" : ""}`}
-            aria-expanded={openMenu === "Run"}
-            aria-haspopup="true"
-            onClick={(event) => {
-              event.stopPropagation();
-              setOpenMenu(openMenu === "Run" ? null : "Run");
-            }}
-            onMouseEnter={() => { if (openMenu) setOpenMenu("Run"); }}
-          >Run</button>
-          {openMenu === "Run" && (
-            <ul className="menu-popup" role="menu">
-              <MenuItem label="Continue" disabled />
-              <MenuSeparator />
-              <MenuItem label="Reset" disabled />
-              <MenuSeparator />
-              <MenuItem label="Save State (F1)">
-                {stateSlots.map((slot) => <MenuItem key={slot} label={`Slot ${slot}`} disabled />)}
-              </MenuItem>
-              <MenuItem label="Load State (F3)">
-                {stateSlots.map((slot) => <MenuItem key={slot} label={`Slot ${slot}`} disabled />)}
-              </MenuItem>
-            </ul>
-          )}
-        </div>
-
-        <div className="top-menu">
-          <button
-            type="button"
-            className={`menu-top${openMenu === "Config" ? " is-open" : ""}`}
-            aria-expanded={openMenu === "Config"}
-            aria-haspopup="true"
-            onClick={(event) => {
-              event.stopPropagation();
-              setOpenMenu(openMenu === "Config" ? null : "Config");
-            }}
-            onMouseEnter={() => { if (openMenu) setOpenMenu("Config"); }}
-          >Config</button>
-          {openMenu === "Config" && (
-            <ul className="menu-popup" role="menu">
-              <MenuItem label="Plugins">
-                <MenuItem label="Video" disabled />
-                <MenuItem label="Sound" disabled />
-                <MenuItem label="Input Port 1" disabled />
-                <MenuItem label="Input Port 2" disabled />
-              </MenuItem>
-              <MenuItem label="Video" action={() => openDialog("video")} />
-              <MenuItem label="Sound" disabled />
-              <MenuItem label="Cd-rom" disabled />
-              <MenuItem label="Game Pads">
-                <MenuItem label="Port 1">
-                  <MenuItem label="Pad 1" action={() => openDialog("gamepad")} />
-                  <MenuItem label="Pad 2" action={() => openDialog("gamepad")} />
-                  <MenuItem label="Pad 3" action={() => openDialog("gamepad")} />
-                  <MenuItem label="Pad 4" action={() => openDialog("gamepad")} />
-                  <MenuItem label="Multitap" disabled />
-                  <MenuItem label="Autofire Pad 1" disabled />
-                </MenuItem>
-                <MenuItem label="Port 2">
-                  <MenuItem label="Pad 1" action={() => openDialog("gamepad")} />
-                  <MenuItem label="Pad 2" action={() => openDialog("gamepad")} />
-                  <MenuItem label="Pad 3" action={() => openDialog("gamepad")} />
-                  <MenuItem label="Pad 4" action={() => openDialog("gamepad")} />
-                  <MenuItem label="Multitap" disabled />
-                  <MenuItem label="Autofire Pad 2" disabled />
-                </MenuItem>
-              </MenuItem>
-              <MenuSeparator />
-              <MenuItem label="Bios" disabled />
-              <MenuSeparator />
-              <MenuItem label="Memory card" action={() => openDialog("memcard")} />
-            </ul>
-          )}
-        </div>
-
-        <div className="top-menu">
-          <button
-            type="button"
-            className={`menu-top${openMenu === "Options" ? " is-open" : ""}`}
-            aria-expanded={openMenu === "Options"}
-            aria-haspopup="true"
-            onClick={(event) => {
-              event.stopPropagation();
-              setOpenMenu(openMenu === "Options" ? null : "Options");
-            }}
-            onMouseEnter={() => { if (openMenu) setOpenMenu("Options"); }}
-          >Options</button>
-          {openMenu === "Options" && (
-            <ul className="menu-popup" role="menu">
-              <MenuItem label="CPU Overclocking">
-                {overclockRates.map((rate) => (
-                  <MenuItem
-                    key={rate}
-                    label={`x${rate}`}
-                    checked={config.CpuOverclocking === rate}
-                    action={() => setConfig({ CpuOverclocking: rate })}
-                  />
-                ))}
-              </MenuItem>
-              <MenuItem label="CPU Mode">
-                <MenuItem
-                  label="Dynarec (fast)"
-                  checked={config.Dynarec}
-                  action={() => setConfig({ Dynarec: true })}
-                />
-                <MenuItem
-                  label="Interpreter (Accurate)"
-                  checked={!config.Dynarec}
-                  action={() => setConfig({ Dynarec: false })}
-                />
-              </MenuItem>
-              <MenuItem label="GTE hacks">
-                <MenuItem
-                  label="Widescreen"
-                  checked={config.Widescreen}
-                  action={() => setConfig({ Widescreen: !config.Widescreen })}
-                />
-                <MenuItem label="Subpixel precision" disabled />
-              </MenuItem>
-              <MenuItem label="Auto load ppf files" disabled />
-              <MenuItem label="Cheat codes" disabled />
-              <MenuItem label="Game Profiles">
-                <MenuItem label="Save Profile" disabled />
-                <MenuItem label="Delete Profile" disabled />
-              </MenuItem>
-            </ul>
-          )}
-        </div>
-
-        <div className="top-menu help-menu">
-          <button
-            type="button"
-            className={`menu-top${openMenu === "Help" ? " is-open" : ""}`}
-            aria-expanded={openMenu === "Help"}
-            aria-haspopup="true"
-            onClick={(event) => {
-              event.stopPropagation();
-              setOpenMenu(openMenu === "Help" ? null : "Help");
-            }}
-            onMouseEnter={() => { if (openMenu) setOpenMenu("Help"); }}
-          >Help</button>
-          {openMenu === "Help" && (
-            <ul className="menu-popup" role="menu">
-              <MenuItem label="Visit ePSXe website" action={() => window.open("https://www.epsxe.com", "_blank", "noopener,noreferrer")} />
-              <MenuSeparator />
-              <MenuItem label="About" disabled />
-            </ul>
-          )}
-        </div>
-      </nav>
-
-      <main
-        className="display-area"
-        onClick={() => openFile("auto")}
-        onKeyDown={(event) => {
-          if (event.key === "Enter" || event.key === " ") openFile("auto");
-        }}
-        role="button"
-        tabIndex={0}
-        aria-label="Open a PS-X EXE"
-      >
-        <div className="canvas-shell">
-          <canvas ref={canvasRef} width={640} height={480} className="game-canvas" />
-          {!loaded && (
-            <div className="display-hint" aria-hidden="true">
-              <span className="epsxe-wordmark">ePSXe</span>
-              <span>Drop a PS-X EXE here or choose File → Run PS-EXE</span>
-            </div>
-          )}
-        </div>
-      </main>
+      <MainMenu
+        run={run}
+        hasMachine={loaded !== null}
+        canStop={loaded !== null || run === "error"}
+        fullscreen={fullscreen}
+        fullscreenSupported={typeof document !== "undefined" && document.fullscreenEnabled}
+        onOpenFile={openFile}
+        onOpenDialog={openDialog}
+        onPause={pause}
+        onResume={resume}
+        onReset={reset}
+        onStop={stop}
+        onToggleFullscreen={() => void toggleFullscreen()}
+      />
+      <DisplaySurface
+        canvasRef={canvasRef}
+        scaleMode={config.DisplayScale}
+        bilinear={config.BilinearFilter}
+        loaded={loaded !== null}
+        onOpen={() => openFile("auto")}
+        onResize={redraw}
+      />
       <input
         ref={fileInput}
         type="file"
         accept=".exe,.bin,.psexe,.psx,.mdf"
         className="file-input"
+        tabIndex={-1}
+        aria-hidden="true"
         onChange={(event) => {
           const mode = fileMode.current;
           onPick(event.currentTarget.files, mode);
           fileMode.current = "auto";
         }}
       />
-
-      <footer className="status-bar">
+      <footer className="status-bar" aria-live="polite">
         <span className={`status-message${lastError ? " has-error" : ""}`}>{lastError || statusLine}</span>
         <span className="status-file">{loaded ? `${loaded} · ${run}` : "No game loaded"}</span>
       </footer>
-
-      {dialog === "video" && <VideoConfigDialog onClose={() => setDialog(null)} />}
-      {dialog === "gamepad" && <GamepadConfigDialog onClose={() => setDialog(null)} />}
+      {dialog === "video" && (
+        <VideoConfigDialog
+          onClose={() => setDialog(null)}
+          fullscreen={fullscreen}
+          onToggleFullscreen={() => void toggleFullscreen()}
+        />
+      )}
+      {dialog === "sound" && (
+        <Dialog title="Sound Configuration" onClose={() => setDialog(null)} showCancel={false} okLabel="Close">
+          <fieldset className="dialog-frame">
+            <legend className="dialog-frame-title">SPU Audio</legend>
+            <div className="gpu-control-row">
+              <label htmlFor="audio-volume">Main Volume</label>
+              <input
+                id="audio-volume"
+                type="range"
+                min="0"
+                max="1"
+                step="0.01"
+                value={config.AudioVolume}
+                onChange={(event) => setConfig({ AudioVolume: Number(event.target.value) })}
+              />
+              <span>{Math.round(config.AudioVolume * 100)}%</span>
+            </div>
+            <label className="check-label">
+              <input type="checkbox" checked={muted} onChange={(event) => setMuted(event.target.checked)} />
+              Mute
+            </label>
+            <button type="button" onClick={() => void audio.unlock()} disabled={audio.state === "running"}>
+              {audio.state === "running" ? "Audio Unlocked" : "Unlock Audio"}
+            </button>
+            <p>Audio starts after a browser-approved click or key gesture. Status: {audio.state}.</p>
+          </fieldset>
+        </Dialog>
+      )}
+      {dialog === "gamepad" && <GamepadConfigDialog initialPort={gamepadPort} onClose={() => setDialog(null)} />}
       {dialog === "memcard" && <MemcardDialog onClose={() => setDialog(null)} />}
+      {dialog === "about" && (
+        <Dialog title="About ePSXe Web" onClose={() => setDialog(null)} showCancel={false} okLabel="Close">
+          <div className="about-content">
+            <p>A client-side PlayStation emulator with a native-resolution renderer.</p>
+            <p>Display scaling changes presentation only, not emulated detail.</p>
+          </div>
+        </Dialog>
+      )}
     </div>
   );
 }
-

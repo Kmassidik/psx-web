@@ -1,168 +1,85 @@
-/**
- * VideoConfigDialog — clone of the blueprint's window_config_videocore
- * ("Config GPUCore"): frames Resolutions and Colors / Framerate /
- * Fullscreen Filters, all keyed to PsxConfig fields.
- */
+/** Native renderer presentation preferences; unsupported GPU features are explicit. */
 import { useState } from "react";
-import { type PsxConfig } from "../../state/config";
+import { DEFAULT_CONFIG, type DisplayScale } from "../../state/config";
 import { useApp, setConfig } from "../store";
 import { Dialog, buttonClass, entryClass, frameClass, frameTitleClass, labelClass, selectClass } from "./Dialog";
 
-const GPUDISPMODE_LABELS = ["Window Mode", "Fullscreen Mode"] as const;
-const GPUIRES_OPTIONS = ["1: Normal Resolution", "2: Resolution x2", "4: Resolution x4"] as const;
-const GPURATIO_OPTIONS = ["0: Stretch", "1: 4:3", "2: Widescreen"] as const;
-const GPUBPROFILE_OPTIONS = ["0: Original", "1: Brightness", "2: More brightness", "3: Most brightness"] as const;
-const GPUBLITMODE_OPTIONS = ["1: OpenGLv1", "2: OpenGLv2"] as const;
-const GPUFULLRES_OPTIONS = ["640x480", "800x600", "1024x768", "1280x960", "1600x1200"] as const;
-const GPURUNMODE_OPTIONS = ["0: 1-Thread", "1: 2-Threads"] as const;
-const GPU2DFILTER_OPTIONS = [
-  "0: None",
-  "1: 2xSai",
-  "2: xBRZ x2",
-  "3: xBRZ x3",
-  "4: xBRZ x4",
-] as const;
-const GPUSHADER_OPTIONS = [
-  "0: None",
-  "1: FXAA",
-  "2: CRT-Hyllian",
-  "3: CRT-Lottes",
-  "4: xBR-LV2-3D",
-  "99: Custom",
-] as const;
+const unsupported = (feature: string) => `${feature} is not implemented by the native renderer.`;
 
 export interface VideoConfigDialogProps {
   onClose: () => void;
+  fullscreen: boolean;
+  onToggleFullscreen: () => void;
 }
 
-/** Clone of window_config_videocore. Local draft state; OK commits via setConfig. */
-export function VideoConfigDialog({ onClose }: VideoConfigDialogProps) {
+export function VideoConfigDialog({ onClose, fullscreen, onToggleFullscreen }: VideoConfigDialogProps) {
   const live = useApp((s) => s.config);
-  const [cfg, setCfg] = useState<PsxConfig>(live);
-  const patch = (p: Partial<PsxConfig>) => setCfg({ ...cfg, ...p });
+  const [scale, setScale] = useState<DisplayScale>(live.DisplayScale);
+  const [showFps, setShowFps] = useState(live.ShowFPS);
+  const [bilinear, setBilinear] = useState(live.BilinearFilter);
 
   return (
     <Dialog
       title="Config GPUCore"
       onClose={onClose}
-      onOk={() => setConfig(cfg)}
+      onOk={() => setConfig({ DisplayScale: scale, ShowFPS: showFps, BilinearFilter: bilinear })}
     >
       <div className="dialog-stack">
         <fieldset className={frameClass}>
           <legend className={frameTitleClass}>Resolutions and Colors</legend>
           <div className="gpu-fields">
-            <div className="display-mode-options">
-              {GPUDISPMODE_LABELS.map((label, i) => (
-                <label key={label} className="check-label">
-                  <input
-                    type="radio"
-                    name="gpudispmode"
-                    checked={i === 0 ? !cfg.Scanlines : cfg.Scanlines}
-                    onChange={() => patch({ Scanlines: i === 1 })}
-                  />
-                  {label}
-                </label>
-              ))}
+            <div className="gpu-control-row">
+              <label className={`${labelClass} field-label`} htmlFor="display-scale">Display Scaling</label>
+              <select id="display-scale" className={selectClass} value={scale} onChange={(e) => setScale(e.target.value as DisplayScale)}>
+                <option value="fit">Fit (preserve aspect ratio)</option>
+                <option value="integer">Integer (native pixels)</option>
+                <option value="stretch">Stretch (fill window)</option>
+              </select>
             </div>
-            <div className="gpu-control-row window-size-row">
-              <span className={`${labelClass} field-label`}>Window Size</span>
-              <input
-                className={`${entryClass} size-entry`}
-                value={String(cfg.ResolutionX)}
-                onChange={(e) => patch({ ResolutionX: Number(e.target.value) || 0 })}
-              />
+            <div className="gpu-control-row">
+              <span className={`${labelClass} field-label`}>Display Mode</span>
+              <button
+                type="button"
+                className={buttonClass}
+                onClick={onToggleFullscreen}
+                disabled={!document.fullscreenEnabled}
+                title={document.fullscreenEnabled ? "Toggle browser fullscreen (F11)" : "This browser does not allow the Fullscreen API."}
+              >{fullscreen ? "Exit Full Screen" : "Full Screen"}</button>
+            </div>
+            <div className="gpu-control-row window-size-row" title="Browser presentation size is controlled by Display Scaling.">
+              <label className={`${labelClass} field-label`} htmlFor="window-width">Window Size</label>
+              <input id="window-width" className={`${entryClass} size-entry`} value={live.ResolutionX} readOnly disabled />
               <span className={labelClass}>x</span>
-              <input
-                className={`${entryClass} size-entry`}
-                value={String(cfg.ResolutionY)}
-                onChange={(e) => patch({ ResolutionY: Number(e.target.value) || 0 })}
-              />
+              <input aria-label="Window height" className={`${entryClass} size-entry`} value={live.ResolutionY} readOnly disabled />
             </div>
             <div className="gpu-control-row">
-              <span className={`${labelClass} field-label`}>FullScreen Size</span>
-              <select
-                className={selectClass}
-                value={`${cfg.ResolutionX}x${cfg.ResolutionY}`}
-                onChange={(e) => {
-                  const [x, y] = e.target.value.split("x").map(Number);
-                  patch({ ResolutionX: x ?? cfg.ResolutionX, ResolutionY: y ?? cfg.ResolutionY });
-                }}
-              >
-                {GPUFULLRES_OPTIONS.map((o) => (
-                  <option key={o}>{o}</option>
-                ))}
+              <label className={`${labelClass} field-label`} htmlFor="fullscreen-size">FullScreen Size</label>
+              <select id="fullscreen-size" className={selectClass} value="available" disabled title="Fullscreen automatically uses the available browser display area.">
+                <option value="available">Available display area</option>
               </select>
             </div>
             <div className="gpu-control-row">
-              <span className={`${labelClass} field-label`}>Internal Resolution</span>
-              <select
-                className={selectClass}
-                value={cfg.CpuOverclocking === 1 ? 0 : cfg.CpuOverclocking === 2 ? 1 : 2}
-                onChange={(e) =>
-                  patch({ CpuOverclocking: [1, 2, 4][Number(e.target.value)] ?? 1 })
-                }
-              >
-                {GPUIRES_OPTIONS.map((o, i) => (
-                  <option key={o} value={i}>
-                    {o}
-                  </option>
-                ))}
+              <label className={`${labelClass} field-label`} htmlFor="internal-resolution">Internal Resolution</label>
+              <select id="internal-resolution" className={selectClass} value="native" disabled title="Only the native PS1 renderer is available; presentation scaling does not add detail.">
+                <option value="native">1: Native Resolution</option>
               </select>
             </div>
             <div className="gpu-control-row">
-              <span className={`${labelClass} field-label`}>Brightness Profile</span>
-              <select
-                className={selectClass}
-                value={cfg.SpuQuality - 1}
-                onChange={(e) => patch({ SpuQuality: Number(e.target.value) + 1 })}
-              >
-                {GPUBPROFILE_OPTIONS.map((o, i) => (
-                  <option key={o} value={i}>
-                    {o}
-                  </option>
-                ))}
+              <label className={`${labelClass} field-label`} htmlFor="brightness-profile">Brightness Profile</label>
+              <select id="brightness-profile" className={selectClass} value="original" disabled title={unsupported("Brightness profiles")}>
+                <option value="original">0: Original</option>
               </select>
             </div>
             <div className="gpu-control-row">
-              <span className={`${labelClass} field-label`}>Screen Ratio</span>
-              <select
-                className={selectClass}
-                value={cfg.Widescreen ? 2 : 1}
-                onChange={(e) => patch({ Widescreen: Number(e.target.value) === 2 })}
-              >
-                {GPURATIO_OPTIONS.map((o, i) => (
-                  <option key={o} value={i}>
-                    {o}
-                  </option>
-                ))}
+              <label className={`${labelClass} field-label`} htmlFor="blit-mode">Blit Mode</label>
+              <select id="blit-mode" className={selectClass} value="canvas" disabled title="Canvas 2D is the fixed native presentation backend.">
+                <option value="canvas">Canvas 2D</option>
               </select>
             </div>
             <div className="gpu-control-row">
-              <span className={`${labelClass} field-label`}>Blit Mode</span>
-              <select
-                className={selectClass}
-                value={cfg.BiosHLE ? 0 : 1}
-                onChange={(e) => patch({ BiosHLE: Number(e.target.value) === 0 })}
-              >
-                {GPUBLITMODE_OPTIONS.map((o, i) => (
-                  <option key={o} value={i}>
-                    {o}
-                  </option>
-                ))}
-              </select>
-            </div>
-            <div className="gpu-control-row">
-              <span className={`${labelClass} field-label`}>Threading Mode</span>
-              <select
-                className={selectClass}
-                value={cfg.Dynarec ? 1 : 0}
-                onChange={(e) => patch({ Dynarec: Number(e.target.value) === 1 })}
-              >
-                {GPURUNMODE_OPTIONS.map((o, i) => (
-                  <option key={o} value={i}>
-                    {o}
-                  </option>
-                ))}
+              <label className={`${labelClass} field-label`} htmlFor="threading-mode">Threading Mode</label>
+              <select id="threading-mode" className={selectClass} value="single" disabled title={unsupported("Renderer threading modes")}>
+                <option value="single">0: 1-Thread</option>
               </select>
             </div>
           </div>
@@ -172,36 +89,20 @@ export function VideoConfigDialog({ onClose }: VideoConfigDialogProps) {
           <legend className={frameTitleClass}>Framerate</legend>
           <div className="framerate-grid">
             <label className="check-label">
-              <input
-                type="checkbox"
-                checked={cfg.ShowFPS}
-                onChange={(e) => patch({ ShowFPS: e.target.checked })}
-              />
+              <input type="checkbox" checked={showFps} onChange={(e) => setShowFps(e.target.checked)} />
               Show FPS
             </label>
-            <label className="check-label">
-              <input
-                type="checkbox"
-                checked={cfg.FrameLimit}
-                onChange={(e) => patch({ FrameLimit: e.target.checked })}
-              />
+            <label className="check-label" title={unsupported("Configurable frame limiting")}>
+              <input type="checkbox" checked={false} disabled />
               Enable FPS Limit
             </label>
-            <label className="check-label">
-              <input
-                type="checkbox"
-                checked={cfg.FrameSkip > 0}
-                onChange={(e) => patch({ FrameSkip: e.target.checked ? 1 : 0 })}
-              />
+            <label className="check-label" title={unsupported("Frameskip")}>
+              <input type="checkbox" checked={false} disabled />
               Enable Frameskip
             </label>
-            <label className="check-label custom-fps">
+            <label className="check-label custom-fps" title={unsupported("Custom FPS and frameskip")}>
               <span className={labelClass}>Custom FPS (0=disabled)</span>
-              <input
-                className={`${entryClass} size-entry`}
-                value={String(cfg.FrameSkip)}
-                onChange={(e) => patch({ FrameSkip: Number(e.target.value) || 0 })}
-              />
+              <input className={`${entryClass} size-entry`} value={0} readOnly disabled />
             </label>
           </div>
         </fieldset>
@@ -210,52 +111,33 @@ export function VideoConfigDialog({ onClose }: VideoConfigDialogProps) {
           <legend className={frameTitleClass}>Fullscreen Filters</legend>
           <div className="gpu-fields">
             <label className="check-label">
-              <input
-                type="checkbox"
-                checked={cfg.Vsync}
-                onChange={(e) => patch({ Vsync: e.target.checked })}
-              />
-              Screen filtering
-            </label>
-            <label className="check-label">
-              <input
-                type="checkbox"
-                checked={cfg.EnableGUI}
-                onChange={(e) => patch({ EnableGUI: e.target.checked })}
-              />
-              Fullscreen bilinear filter
+              <input type="checkbox" checked={bilinear} onChange={(e) => setBilinear(e.target.checked)} />
+              Bilinear filter (presentation only)
             </label>
             <div className="gpu-control-row">
-              <span className={`${labelClass} field-label`}>Filter for 2D games</span>
-              <select
-                className={selectClass}
-                value={cfg.Filter2D}
-                onChange={(e) => patch({ Filter2D: Number(e.target.value) })}
-              >
-                {GPU2DFILTER_OPTIONS.map((o, i) => (
-                  <option key={o} value={i}>
-                    {o}
-                  </option>
-                ))}
+              <label className={`${labelClass} field-label`} htmlFor="filter-2d">Filter for 2D games</label>
+              <select id="filter-2d" className={selectClass} value="none" disabled title={unsupported("2D post-processing filters")}>
+                <option value="none">0: None</option>
               </select>
             </div>
             <div className="gpu-control-row shader-row">
-              <span className={`${labelClass} field-label`}>Shader Effects</span>
-              <select
-                className={selectClass}
-                value={cfg.Shader === "" ? "0: None" : cfg.Shader}
-                onChange={(e) => patch({ Shader: e.target.value === "0: None" ? "" : e.target.value })}
-              >
-                {GPUSHADER_OPTIONS.map((o) => (
-                  <option key={o}>{o}</option>
-                ))}
+              <label className={`${labelClass} field-label`} htmlFor="shader-effects">Shader Effects</label>
+              <select id="shader-effects" className={selectClass} value="none" disabled title={unsupported("Shader effects")}>
+                <option value="none">0: None</option>
               </select>
-              <button className={buttonClass} title="Select shader directory">
-                ...
-              </button>
+              <button type="button" className={buttonClass} disabled title={unsupported("Custom shaders")} aria-label="Select shader directory">...</button>
             </div>
           </div>
         </fieldset>
+        <button
+          type="button"
+          className={`${buttonClass} dialog-defaults`}
+          onClick={() => {
+            setScale(DEFAULT_CONFIG.DisplayScale);
+            setShowFps(DEFAULT_CONFIG.ShowFPS);
+            setBilinear(DEFAULT_CONFIG.BilinearFilter);
+          }}
+        >Reset Display Defaults</button>
       </div>
     </Dialog>
   );

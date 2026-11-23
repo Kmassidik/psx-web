@@ -1,9 +1,4 @@
-/**
- * MemcardDialog — clone of the blueprint's window_config_memcards
- * ("ePSXe memcards config"): frame "Select Memcards files", slot 1/2 rows
- * (memcard_file1_entry / memcard_file2_entry), Open buttons, Format/Eject.
- * OK writes Memcard1/Memcard2 via setConfig; Format/Eject are UI-only this phase.
- */
+/** Memory-card file-name preferences; card I/O is not connected to Machine. */
 import { useState } from "react";
 import { useApp, setConfig } from "../store";
 import { Dialog, buttonClass, entryClass, frameClass, frameTitleClass } from "./Dialog";
@@ -20,7 +15,10 @@ export function MemcardDialog({ onClose }: MemcardDialogProps) {
 
   return (
     <Dialog title="ePSXe memcards config" onClose={onClose} onOk={() => setConfig({ Memcard1: file1, Memcard2: file2 })}>
-      <fieldset className={frameClass}>
+      <p id="memcard-note" className="dialog-note">
+        File names are saved as preferences only. Card data is not loaded or attached to the running machine.
+      </p>
+      <fieldset className={frameClass} aria-describedby="memcard-note">
         <legend className={frameTitleClass}>Select Memcards files</legend>
         <div className="memcard-grid">
           {(
@@ -36,10 +34,12 @@ export function MemcardDialog({ onClose }: MemcardDialogProps) {
                 value={file}
                 onChange={(e) => set(e.target.value)}
                 aria-label={`Memcard slot ${slot} file`}
+                maxLength={1024}
+                aria-describedby="memcard-note"
               />
-              <button type="button" className={buttonClass} title="Choose memcard file">Open</button>
-              <button type="button" className={buttonClass} title="Format this memcard (UI only)">Format</button>
-              <button type="button" className={buttonClass} title="Eject this memcard (UI only)">Eject</button>
+              <button type="button" className={buttonClass} disabled title="Memory-card file loading is not connected to the emulator.">Open</button>
+              <button type="button" className={buttonClass} disabled title="Memory-card formatting requires card storage support.">Format</button>
+              <button type="button" className={buttonClass} disabled title="No memory card is attached to the running machine.">Eject</button>
             </div>
           ))}
         </div>

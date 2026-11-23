@@ -3,7 +3,7 @@
  * Emulator memory/frames never pass through here (low-RAM rule).
  */
 import { useSyncExternalStore } from "react";
-import { DEFAULT_CONFIG, type PsxConfig } from "../state/config";
+import { DEFAULT_CONFIG, loadConfig, saveConfig, validateConfig, type PsxConfig } from "../state/config";
 
 export type RunState = "idle" | "loaded" | "running" | "paused" | "error";
 
@@ -15,7 +15,7 @@ interface AppState {
 }
 
 let state: AppState = {
-  config: DEFAULT_CONFIG,
+  config: loadConfig(),
   run: "idle",
   statusLine: "ready",
   lastError: "",
@@ -33,7 +33,16 @@ export function setState(patch: Partial<AppState>): void {
 }
 
 export function setConfig(patch: Partial<PsxConfig>): void {
-  state = { ...state, config: { ...state.config, ...patch } };
+  const config = validateConfig({ ...state.config, ...patch });
+  state = { ...state, config };
+  saveConfig(config);
+  for (const l of listeners) l();
+}
+
+export function resetConfig(): void {
+  const config = validateConfig(DEFAULT_CONFIG);
+  state = { ...state, config };
+  saveConfig(config);
   for (const l of listeners) l();
 }
 

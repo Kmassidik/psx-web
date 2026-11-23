@@ -5,9 +5,11 @@
  * Sony BS bitstream front end ("decode16": variable-length huffman, BS v1/v2/v3),
  * IDCT (AAN fast path + real-matrix general path), YUV→RGB / mono output.
  *
- * Tables are spec-copied in mdec-tables.ts. Semi-transparency (MDEC0 bit 25,
- * STP) is stored into status bit 23 and emitted as the 15bpp bit 15 / RGBA
- * alpha flag only; no blending is performed — the hardware does not blend.
+ * Tables are spec-copied in mdec-tables.ts. STP (MDEC0 bit 25) is reflected in
+ * status and emitted as bit 15 of each 15bpp pixel; the hardware does not blend.
+ * Decoding completes atomically on the final input word (no cycle-level delay).
+ * Precision model: fixed-point AAN/real IDCT; 24/8bpp ties down with signed
+ * 9-bit wrap/saturation, while 15bpp ties up and saturates signed 5-bit channels.
  *
  * Numeric model notes (psx-spx + pcsx-redux hardware measurements):
  * - Standard scale/quant tables take the AAN fast IDCT (80 muls). The MDEC(3)
@@ -33,9 +35,9 @@ const S = 64; // coefficients per 8x8 block
 /** SCALER(x,n): divide by 2^n, ties round up (reference AAN decoder). */
 const scaler = (x: number, n: number): number => (x + ((1 << n) >> 1)) >> n;
 /** SCALE8: divide by 2^20 with ties round DOWN (measured output rounding). */
-const scale8 = (c: number): number => (c + (1 << 19) - 1) >> 20;
+const scale8 = (c: number): number => Math.floor((c + (1 << 19) - 1) / 2 ** 20);
 /** SCALE5: divide by 2^23, ties up — 15bpp stage unmeasured on hardware. */
-const scale5 = (c: number): number => (c + (1 << 22)) >> 23;
+const scale5 = (c: number): number => Math.floor((c + (1 << 22)) / 2 ** 23);
 /** Signed 10-bit field (RLE_VAL). */
 const val10 = (w: number): number => (w << 22) >> 22;
 /** Saturate to the spec's signed 11-bit dequant range [-0x400, +0x3FF]. */
@@ -53,14 +55,16 @@ const FIX_1_847759065 = scaler(31000253, 12); // A2 = sqrt(2)*scalefactor[2]
 const FIX_2_613125930 = scaler(43840978, 12); // B2 = scalefactor[2]*2
 
 /** Reference clamp8: 9-bit wrap THEN saturate, +128 to unsigned. */
-const clamp8 = (c: number): number => {
+const clamp8 = (c: number, unsigned: boolean): number => {
   const v = ((c & 0x1ff) ^ 0x100) - 0x100;
-  if (v < -128) return 0;
-  if (v > 127) return 255;
-  return v + 128;
+  const sat = v < -128 ? -128 : v > 127 ? 127 : v;
+  return unsigned ? sat + 128 : sat & 0xff;
 };
-/** 15bpp sibling: saturate to 5 bits around a 16 centre. */
-const clamp5 = (c: number): number => (c < -16 ? 0 : c > 15 ? 31 : c + 16);
+/** 15bpp sibling: saturate to signed 5 bits, then optionally bias unsigned. */
+const clamp5 = (c: number, unsigned: boolean): number => {
+  const v = c < -16 ? -16 : c > 15 ? 15 : c;
+  return unsigned ? v + 16 : v & 31;
+};
 
 /** One AAN butterfly stage over columns (stride 8) or rows (stride 1). */
 const aanStage = (b: Int32Array, cols: boolean, active: number): void => {
@@ -178,9 +182,8 @@ const makeTables = (): MdecTables => {
     iqY: new Int32Array(64),
     iqUV: new Int32Array(64),
     scale: new Int16Array(64),
-    customScale: false,
+    customScale: true,
   };
-  t.scale.set(STANDARD_SCALE_TABLE);
   return t;
 };
 
@@ -276,8 +279,12 @@ export class Mdec {
   private dmaOut = false;
   private currentBlock = 4;
 
-  /** MDEC0 write (0x1F801820): command word; parameters follow via pushWord. */
+  /** MDEC0 write: command when idle, parameter/data word while busy. */
   write(data: number): void {
+    if (this.remaining >= 0) {
+      this.pushWord(data);
+      return;
+    }
     this.command = data >>> 0;
     const cmd = (data >>> 29) & 7;
     if (cmd === 1) {
@@ -319,6 +326,9 @@ export class Mdec {
     this.rlPos = 0;
     this.out = new Uint32Array(0);
     this.outPos = 0;
+    this.dmaIn = false;
+    this.dmaOut = false;
+    this.currentBlock = 4;
     this.regs = 0x80040000;
   }
 
@@ -349,17 +359,26 @@ export class Mdec {
     }
   }
 
-  /** Read decoded output (DMA1 / CPU reads from 0x1F801820); drains the FIFO. */
+  /** Pop one output word (CPU/DMA1 read); empty FIFO returns an empty view. */
   readOutput(): Uint32Array {
+    if (this.outPos >= this.out.length) return new Uint32Array(0);
+    const r = this.out.subarray(this.outPos, this.outPos + 1);
+    this.outPos++;
+    this.updateStatus();
+    return r;
+  }
+
+  /** Explicit bulk consumer for frame buffers and tests. */
+  drainOutput(): Uint32Array {
     const r = this.out.slice(this.outPos);
     this.outPos = this.out.length;
-    this.updateStatus();
+    if (r.length !== 0) this.updateStatus();
     return r;
   }
 
   /** 15bpp halfword view of the remaining output (GPU-style transfers). */
   readOutput16(): Uint16Array {
-    const u32 = this.readOutput();
+    const u32 = this.drainOutput();
     const out = new Uint16Array(u32.length * 2);
     new Uint32Array(out.buffer).set(u32);
     return out;
@@ -413,7 +432,7 @@ export class Mdec {
   private decode(): void {
     const depth = (this.command >>> 27) & 3;
     const mono = depth < 2; // 4bpp/8bpp: single Y block per macroblock
-    const rgba = depth === 3; // 15bpp: packed as RGBA u32 words
+    const bpp15 = depth === 3; // 15bpp: two packed halfword pixels per u32
     const stp = (this.command & 0x02000000) !== 0;
     const signed = (this.command & 0x04000000) !== 0;
     const nHalf = this.rl.length;
@@ -421,7 +440,7 @@ export class Mdec {
     while (pos < nHalf && this.rl[pos] === EOB) pos++;
     const blocks = this.countBlocks(pos);
     const mbCount = mono ? blocks : Math.floor(blocks / BLOCKS);
-    const bytesPerMb = mono ? (depth === 0 ? 32 : 64) : rgba ? 256 * 4 : 256 * 3;
+    const bytesPerMb = mono ? (depth === 0 ? 32 : 64) : bpp15 ? 256 * 2 : 256 * 3;
     this.out = new Uint32Array(Math.ceil((mbCount * bytesPerMb) / 4));
     const o8 = new Uint8Array(this.out.buffer);
     let op = 0;
@@ -440,11 +459,12 @@ export class Mdec {
           pos = next;
           this.currentBlock = b < 2 ? b + 4 : b - 2; // Cr,Cb (idle) / Y1..Y4
         }
-        this.emitColor(o8, op, rgba, stp);
+        this.emitColor(o8, op, bpp15, signed, stp);
         op += bytesPerMb;
       }
     }
     this.outPos = 0;
+    if (this.out.length !== 0) this.currentBlock = mono ? 4 : 0;
     this.updateStatus();
   }
 
@@ -454,15 +474,12 @@ export class Mdec {
     const chroma = b < 2;
     const iq = chroma ? this.tables.iqUV : this.tables.iqY;
     const qt = chroma ? this.tables.qtUV : this.tables.qtY;
-    if (this.tables.customScale) {
-      return this.dequantReal(blk, pos, iq, qt);
-    }
-    const next = dequantBlockAan(blk, this.rl, pos, iq, qt, this.usedScratch);
-    return next;
+    if (this.tables.customScale) return this.dequantReal(blk, pos, qt);
+    return dequantBlockAan(blk, this.rl, pos, iq, qt, this.usedScratch);
   }
 
   /** General-path dequant (spec 11-bit clamp, no AAN) + real-matrix IDCT. */
-  private dequantReal(blk: Int32Array, pos: number, iq: Int32Array, qt: Uint8Array): number {
+  private dequantReal(blk: Int32Array, pos: number, qt: Uint8Array): number {
     const n = this.rl.length;
     blk.fill(0);
     let p = pos;
@@ -483,11 +500,8 @@ export class Mdec {
       const val = qScale === 0 ? v * 2 : Math.trunc((v * qt[k]! * qScale + 4) / 8);
       blk[qScale === 0 ? k : ZIGZAG[k]!] = sat11(val);
     }
-    // real_idct_core yields raw pixel-domain values; scale it into the
-    // shared 2^10 output domain AFTER the transform so one colour stage
-    // serves both paths.
+    // idctReal returns values in the shared 2^10 output domain.
     idctReal(blk, this.tables.scale);
-    for (let i = 0; i < S; i++) blk[i] = blk[i]! * 1024;
     return p;
   }
 
@@ -496,7 +510,7 @@ export class Mdec {
     const blk = this.blk;
     for (let i = 0; i < S; i++) {
       // 2^10 prescale → pixel domain, round-half-down (shared output stage).
-      let y = scale8(blk[i]! << 10);
+      let y = scale8(blk[i]! * 1024);
       y &= 0x1ff; // 9-bit wrap...
       y = y > 255 ? y - 512 : y; // ...to signed 9 bits...
       if (y < -128) y = -128;
@@ -512,8 +526,8 @@ export class Mdec {
     }
   }
 
-  /** Emit one colored 16x16 macroblock: RGB24 bytes or RGBA u32 words. */
-  private emitColor(o8: Uint8Array, off: number, rgba: boolean, stp: boolean): void {
+  /** Emit one colored 16x16 macroblock as packed RGB24 or RGB555. */
+  private emitColor(o8: Uint8Array, off: number, bpp15: boolean, signed: boolean, stp: boolean): void {
     const blk = this.blk;
     const Cr = 0;
     const Cb = S;
@@ -521,25 +535,31 @@ export class Mdec {
     const Y2 = 3 * S;
     const Y3 = 4 * S;
     const Y4 = 5 * S;
-    const pxBytes = rgba ? 4 : 3;
+    const pxBytes = bpp15 ? 2 : 3;
     for (let y = 0; y < 16; y++) {
       for (let x = 0; x < 16; x++) {
         const xr = x < 8 ? x : x - 8;
         const yr = y < 8 ? y : y - 8;
         const yIdx =
           y < 8 ? (x < 8 ? Y1 + yr * 8 + xr : Y2 + yr * 8 + xr) : x < 8 ? Y3 + yr * 8 + xr : Y4 + yr * 8 + xr;
-        const ci = (y >> 1) * 8 + (x >> 1); // chroma is 8x8 for 16x16 pixels
-        const yv = blk[yIdx]!;
+        const ci = (y >> 1) * 8 + (x >> 1);
+        const yv = blk[yIdx]! * 1024;
         const cr = blk[Cr + ci]!;
         const cb = blk[Cb + ci]!;
         const o = off + (y * 16 + x) * pxBytes;
-        const r = clamp8(scale8((yv << 10) + MULR(cr)));
-        const g = clamp8(scale8((yv << 10) + MULG(cb, cr)));
-        const b = clamp8(scale8((yv << 10) + MULB(cb)));
-        o8[o] = r;
-        o8[o + 1] = g;
-        o8[o + 2] = b;
-        if (rgba) o8[o + 3] = stp ? 0x80 : 0;
+        const rc = yv + MULR(cr);
+        const gc = yv + MULG(cb, cr);
+        const bc = yv + MULB(cb);
+        if (bpp15) {
+          const px = clamp5(scale5(rc), !signed) | (clamp5(scale5(gc), !signed) << 5) |
+            (clamp5(scale5(bc), !signed) << 10) | (stp ? 0x8000 : 0);
+          o8[o] = px & 0xff;
+          o8[o + 1] = px >>> 8;
+        } else {
+          o8[o] = clamp8(scale8(rc), !signed);
+          o8[o + 1] = clamp8(scale8(gc), !signed);
+          o8[o + 2] = clamp8(scale8(bc), !signed);
+        }
       }
     }
   }
@@ -548,22 +568,22 @@ export class Mdec {
   private updateStatus(): void {
     const depth = (this.command >>> 27) & 3;
     const outEmpty = this.outPos >= this.out.length;
-    const busy = this.remaining > 0;
+    const busy = this.remaining >= 0;
     const cmd = (this.command >>> 29) & 7;
-    const inFull =
-      this.remaining === 0 ||
-      (busy && cmd === 1 && this.rl.length > 0 && this.rlPos >= this.rl.length);
+    const inFull = this.remaining === 0;
+    if (outEmpty && cmd === 1 && !busy) this.currentBlock = depth < 2 ? 4 : 3;
     let r = 0;
-    if (outEmpty || this.remaining < 0) r |= 1 << 31; // FIFO1 data-out empty
-    if (inFull) r |= 1 << 30; // FIFO0 data-in full
-    if (busy) r |= 1 << 29; // BUSY
-    if (this.dmaIn && !busy) r |= 1 << 28; // DREQ0
+    if (outEmpty) r |= 1 << 31; // FIFO1 data-out empty
+    if (inFull) r |= 1 << 30; // FIFO0 data-in full / last word received
+    if (busy) r |= 1 << 29; // BUSY, including the final pending word
+    if (this.dmaIn && !inFull) r |= 1 << 28; // DREQ0
     if (this.dmaOut && !outEmpty) r |= 1 << 27; // DREQ1
     r |= (depth & 3) << 25; // output depth (CMD 28-27)
     if ((this.command & 0x04000000) !== 0) r |= 1 << 24; // signed (CMD 26)
     if ((this.command & 0x02000000) !== 0) r |= 1 << 23; // STP (CMD 25)
     r |= (this.currentBlock & 7) << 16;
-    r |= this.remaining >= 0 ? this.remaining & 0xffff : 0xffff;
+    const parameterStatus = this.remaining >= 0 ? this.remaining : 0xffff;
+    r |= cmd >= 1 && cmd <= 3 ? parameterStatus : this.command & 0xffff;
     this.regs = r >>> 0;
   }
 

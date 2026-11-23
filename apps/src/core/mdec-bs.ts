@@ -8,9 +8,10 @@
  * Format notes (psx-spx "DC v1/v2/ea" + pcsx-redux retail-stream measurements):
  * - Word 0 of the 8-byte header IS the MDEC(1) decode command → magic 0x3800.
  * - v1/v2 carry a raw 10-bit DC per block; 0x1FF in that slot is End of Frame.
+ * - v3 uses ten one bits for End of Frame before its Huffman-coded DC slot.
  * - ONLY v3 delta-codes the DC (Cr/Cb predictors, shared Y predictor).
  * - Escape code: 6-bit ESC then the 16-bit run-level word VERBATIM.
- * - Frames end at 0x1FF then pad to 32-bit words; the header length counts
+ * - Frames end at their version's marker then pad to 32-bit words; the header length counts
  *   run-level halfwords, and the decoder fills FE00 footers up to it.
  */
 import {
@@ -47,6 +48,11 @@ export function decode16(bs: Uint8Array): Uint16Array {
   const lastDc = [0, 0, 0];
   let blockInMb = 0;
   while (rl.length < target && !br.overrun) {
+    // v3 reserves ten one bits (rather than v1/v2's 0x1FF raw DC) for EOF.
+    if (deltaDc && br.peek(10) === 0x3ff) {
+      br.get(10);
+      break;
+    }
     const blockStart = rl.length;
     let dc: number;
     if (!deltaDc) {
