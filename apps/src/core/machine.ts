@@ -248,9 +248,8 @@ export class Machine {
       const isVector = vector === 0xa0 || vector === 0xb0 || vector === 0xc0;
       const isHleRam = handlerPc >= 0x8000_0100 && handlerPc < 0x8000_3000;
       if (handlerPc < 0x8000_0000 && !isVector && !isHleRam) break;
-      const executed = this.cpu.runBlock();
-      if (executed === 0) break;
-      this.rcnt.tick(executed);
+      if (!this.cpu.step()) break;
+      this.rcnt.tick(1);
     }
     this.cpu.r.set(registers);
     this.cpu.cp0.set(cp0);

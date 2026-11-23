@@ -75,21 +75,6 @@ export class Cpu {
     this.dyn.flush();
   }
 
-  /** Execute at most one translated block, or one interpreted instruction. */
-  runBlock(): number {
-    if (this.enabledDynarec && this.validPc(this.pc)) {
-      try {
-        const count = this.dyn.run(
-          this.pc, (a) => this.mem.load32(a) | 0, this.dynHooks, this, 64,
-        );
-        if (count !== 0) return count;
-      } catch (e) {
-        if (!(e instanceof UnsupportedInstructionError)) throw e;
-      }
-    }
-    return this.step() ? 1 : 0;
-  }
-
   /** Execute n instructions. Returns false on unhandled exception. */
   run(n: number): boolean {
     for (let i = 0; i < n;) {
