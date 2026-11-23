@@ -84,7 +84,7 @@ export class Machine {
     }, (table, fn) => this.kernel.call(table, fn));
     this.kernel = new BiosKernel(this.cpu, this.gpu, this.pads);
     this.dma.onComplete = (channel) => {
-      if (channel === 2) this.kernel.deliver(0xf000_0009, 0x20);
+      if (channel === 4) this.kernel.deliver(0xf000_0009, 0x20);
     };
   }
 
