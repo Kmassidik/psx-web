@@ -169,6 +169,16 @@ describe("BIOS-free kernel services", () => {
     expect(call(m, 0xb0, 0x0b, 0xf100_0000 | 0)).toBe(1);
   });
 
+  test("CDROM INT1 marks the data-ready event", () => {
+    const m = new Machine();
+    m.installHleVectors();
+    m.cdrom.write(1, 0x06);
+    m.cdrom.ack(0x07);
+    m.cdrom.setSectorData(new Uint8Array(2352));
+    m.cdrom.exec();
+    expect(call(m, 0xb0, 0x0b, 0xf100_0002)).toBe(1);
+  });
+
   test("callback-mode delivery executes the event function once", () => {
     const m = new Machine();
     m.installHleVectors();

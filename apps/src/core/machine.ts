@@ -68,9 +68,10 @@ export class Machine {
     };
     this.cdrom.irqFire = (_line, kind) => {
       this.raiseIrq(IRQ_CDROM);
-      // INT3 is only an acknowledgement, not transfer completion. INT1 means
-      // data ready and uses no CDROM event spec. INT4/INT5 are end/error.
+      // INT3 is only an acknowledgement, not transfer completion. INT1 is
+      // data ready; INT4/INT5 are end/error.
       if (kind === 0) this.kernel.deliver(0xf000_0003, 0x10);
+      else if (kind === 1) this.kernel.deliver(0xf000_0003, 0x40);
       else if (kind === 2) this.kernel.deliver(0xf000_0003, 0x20);
       else if (kind === 4) this.kernel.deliver(0xf000_0003, 0x80);
       else if (kind === 5) this.kernel.deliver(0xf000_0003, 0x8000);
