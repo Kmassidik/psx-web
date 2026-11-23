@@ -64,6 +64,7 @@ export interface Prim {
   blendMode: 0 | 1 | 2 | 3;
   texPage: number;
   clutBase: number;
+  texWindow: number;
   dither: boolean;
   semiTrans: boolean;
 }
@@ -196,8 +197,19 @@ function sampleTexel(vram: Uint16Array, prim: Prim, u: number, v: number): Texel
   const texX = (prim.texPage & 0xf) * 64;
   const texY = ((prim.texPage >> 4) & 1) * 256;
   const mode = (prim.texPage >> 7) & 3;
-  const uu = u & 1023;
-  const vv = v & 511;
+  let uu = u;
+  let vv = v;
+  if (prim.texWindow !== undefined && prim.texWindow !== 0) {
+    const maskX = prim.texWindow & 0x1f;
+    const offX = (prim.texWindow >>> 5) & 0x1f;
+    const maskY = (prim.texWindow >>> 10) & 0x1f;
+    const offY = (prim.texWindow >>> 15) & 0x1f;
+    uu = ((u & maskX) | offX) & 1023;
+    vv = ((v & maskY) | offY) & 511;
+  } else {
+    uu = u & 1023;
+    vv = v & 511;
+  }
   if (mode === 0) {
     // 4bpp CLUT: 4 texels per halfword
     const hw = rd((texY + vv) * 1024 + texX + (uu >> 2));

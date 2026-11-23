@@ -78,6 +78,7 @@ export class Gpu {
   /** Texture state from the first vertex of textured prims. */
   private texPage = 0;
   private clutBase = 0;
+  private texWindow = 0;
   private imgX = 0; private imgY = 0; private imgW = 0; private imgH = 0;
   private imgCur = 0;
   private fillX = 0; private fillY = 0; private fillW = 0; private fillH = 0;
@@ -100,6 +101,7 @@ export class Gpu {
       case 0xc0: // Store image
         this.cmdWords = [w]; this.cmdLeft = 2; break;
       case 0xe1: this.texPage = w & 0xffff; break; // draw mode / texture page
+      case 0xe2: this.texWindow = w & 0xfffff; break; // texture window
       case 0xe3:
         this.clipX1 = w & 0x3ff; this.clipY1 = (w >>> 10) & 0x1ff; break;
       case 0xe4:
@@ -224,6 +226,7 @@ export class Gpu {
       blendMode: ((this.texPage >>> 5) & 3) as 0 | 1 | 2 | 3,
       texPage: this.texPage,
       clutBase: this.clutBase,
+      texWindow: this.texWindow,
       dither: (this.texPage & 0x200) !== 0,
       semiTrans: (top & 0x02) !== 0,
     });
@@ -274,6 +277,7 @@ export class Gpu {
       blendMode: ((this.texPage >>> 5) & 3) as 0 | 1 | 2 | 3,
       texPage: this.texPage,
       clutBase: this.clutBase,
+      texWindow: this.texWindow,
       dither: (this.texPage & 0x200) !== 0,
       semiTrans,
     });
