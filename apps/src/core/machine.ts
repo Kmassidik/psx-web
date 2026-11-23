@@ -250,7 +250,7 @@ export class Machine {
     this.cpu.r[2] = kind === "exception" ? 1 : 0; // only exception hooks require v0 = 1
     this.cpu.pc = entry;
     this.cpu.nextPc = (entry + 4) | 0;
-    this.cpu.r[29] = 0x8000_fffc; // 4 KiB kernel exception stack, not the user stack
+    this.cpu.r[29] = (0x8000_fffc - this.handlerDepth * 0x1000) | 0; // unique 4 KiB kernel stack per nesting level
     this.cpu.r[30] = 0;
     this.cpu.r[31] = 0x8000_0110;
     const customExit = kind === "exception" ? this.kernel.customExitAddress : 0;
