@@ -163,6 +163,8 @@ export class Cdrom {
     return 0; // unreachable
   }
 
+  get isReading(): boolean { return this.reading; }
+
   setSectorProvider(provider: (lba: number) => Uint8Array | undefined): void {
     this.sectorProvider = provider;
     this.motorOn = true;

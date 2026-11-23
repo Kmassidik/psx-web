@@ -234,20 +234,18 @@ export class Machine {
   /** Execute ExCB chains in priority order. Each FIRST function may request its
    * SECOND function by returning nonzero; ReturnFromException skips all lower
    * priority handlers and the custom exception hook. */
-  private runInterruptChain(): boolean {
+  private runInterruptChain(priority = 2): boolean {
     const entries = this.kernel.interruptEntries();
-    for (let priority = 0; priority < 4; priority++) {
-      for (const entry of entries) {
-        if (entry.priority !== priority) continue;
-        const first = this.mem.load32(entry.struc + 8);
-        if (first === 0) continue;
-        const result = this.runHandler(first);
+    for (const entry of entries) {
+      if (entry.priority !== priority) continue;
+      const first = this.mem.load32(entry.struc + 8);
+      if (first === 0) continue;
+      const result = this.runHandler(first);
+      if (this.handlerReturnedFromException) return false;
+      const second = this.mem.load32(entry.struc + 4);
+      if (result !== 0 && second !== 0) {
+        this.runHandler(second);
         if (this.handlerReturnedFromException) return false;
-        const second = this.mem.load32(entry.struc + 4);
-        if (result !== 0 && second !== 0) {
-          this.runHandler(second);
-          if (this.handlerReturnedFromException) return false;
-        }
       }
     }
     return true;
@@ -373,7 +371,7 @@ export class Machine {
     const ok = this.cpu.run(n);
     this.joypad.tick(n);
     if (deliverException) {
-      if ((pendingIrq & IRQ_VBLANK) !== 0) this.runInterruptChain();
+      if ((pendingIrq & IRQ_VBLANK) !== 0 && (pendingIrq & (IRQ_CDROM | IRQ_DMA)) === 0 && !this.cdrom.isReading) this.runInterruptChain();
       else this.runHandler(this.kernel.interruptHandler(0), "vblank");
       this.runHandler(this.kernel.exceptionHook(), "exception");
     }
@@ -394,7 +392,7 @@ export class Machine {
     } else {
       this.spu.tick(n); // SPU clock = cpu cycles / 768 internally
     }
-    this.rcnt.tick(n);
+    this.rcnt.tick(n, false);
     // VBLANK: ~60Hz — accumulate CPU cycles and raise IRQ line 0 each frame
     // (N = cycles/frame ≈ 33.8M/60 ≈ 563k at 33.8MHz CPU).
     this.vblankAcc += n;
