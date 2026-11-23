@@ -66,6 +66,7 @@ if (!frontendBytes) throw new Error("No FE.EXE;1 found");
 const frontend = parsePsExe(frontendBytes);
 machine.loadExe(frontendBytes, frontend.pc0, frontend.t_addr, frontend.data);
 for (let i = 0; i < 300; i++) machine.runSlice(20_000);
+console.log(`front-end complete pc=${hex(machine.cpu.pc)} cycles=${machine.cpu.cycles} truncations=${machine.diagnostics.handlerTruncations}`);
 const gameBytes = readIsoFile(provider, "cdrom:\\GAME.EXE;1");
 if (!gameBytes) throw new Error("No GAME.EXE;1 found");
 const game = parsePsExe(gameBytes);

@@ -115,7 +115,7 @@ export class WorkerHost {
     const result = await this.request({
       type: "boot", buffer, name, mode, options,
       input: this.input, inputRevision: this.inputRevision,
-    }, transfers, Math.max(this.requestTimeoutMs, 60_000));
+    }, transfers, Math.max(this.requestTimeoutMs, 600_000));
     if (result.kind !== "boot") throw new WorkerHostError("protocol", "Boot returned the wrong response");
     this.lifecycle = result.lifecycle;
     this.streaming = true;
@@ -175,7 +175,7 @@ export class WorkerHost {
     this.stopStreaming();
     this.releaseInput();
     this.cycleBudget = new CycleBudget();
-    const result = await this.request({ type: "reset" }, [], Math.max(this.requestTimeoutMs, 60_000));
+    const result = await this.request({ type: "reset" }, [], Math.max(this.requestTimeoutMs, 600_000));
     if (result.kind !== "boot") throw new WorkerHostError("protocol", "Reset returned the wrong response");
     this.lifecycle = result.lifecycle;
     this.streaming = true;
