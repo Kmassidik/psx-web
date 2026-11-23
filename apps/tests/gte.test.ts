@@ -64,6 +64,33 @@ const NCDS_SF1 = 0x0048_0013; // NCDS sf=1 lm=0
 // 1. RTPS against hand-computed exact values (zero / ±1 / small inputs)
 // ---------------------------------------------------------------------------
 
+describe("AVSZ3/AVSZ4 exact averaging", () => {
+  test("AVSZ3 uses SZ1..SZ3 and AVSZ4 uses SZ0..SZ3", () => {
+    const g = new GTE();
+    g.dr[16] = 100;
+    g.dr[17] = 200;
+    g.dr[18] = 300;
+    g.dr[19] = 400;
+    g.cr[29] = 1;
+    g.cr[30] = 2;
+    g.execute(0x2d);
+    expect(g.dr[24]).toBe(900);
+    expect(g.otz).toBe(900);
+    g.execute(0x2e);
+    expect(g.dr[24]).toBe(2000);
+    expect(g.otz).toBe(2000);
+  });
+
+  test("average Z saturates OTZ and raises the error chain", () => {
+    const g = new GTE();
+    g.dr[16] = g.dr[17] = g.dr[18] = g.dr[19] = 0xffff;
+    g.cr[29] = 0xffff;
+    g.execute(0x2d);
+    expect(g.otz).toBe(0xffff);
+    expect(g.flag & 0x8000_0000).not.toBe(0);
+  });
+});
+
 describe("RTPS exact hand-computed values", () => {
   /** Scene: H=1000, OFX=OFY=256, TR=0, RT=I(1.0), DQA=0, DQB=0.
    *  RTPS ends with MAC0 = n*DQA + DQB = 0 (DuckStation-confirmed tail). */

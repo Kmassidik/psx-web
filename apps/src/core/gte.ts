@@ -659,6 +659,23 @@ export class GTE {
     this.pushRgbFromMac();
   }
 
+  /** AVSZ3/AVSZ4: OTZ = ZSF * sum of the last three/four Z FIFO entries. */
+  private avsz(count: 3 | 4): void {
+    let sum = 0;
+    for (let i = 20 - count; i < 20; i++) sum += this.dr[i]! & 0xffff;
+    const zsf = count === 3 ? this.cr[CR_ZSF3]! : this.cr[CR_ZSF4]!;
+    let value = sum * zsf;
+    this.setMac0(value);
+    if (value < 0) {
+      value = 0;
+      this.cr[CR_FLAG]! |= FLAG_SZ_OTZ_SAT;
+    } else if (value > 0xffff) {
+      value = 0xffff;
+      this.cr[CR_FLAG]! |= FLAG_SZ_OTZ_SAT;
+    }
+    this.dr[7] = value;
+  }
+
   /** SQR(sf) — no$psx 0A00428h: MAC = IR² SHR (sf*12); IR = MAC saturated
    *  to max +7FFFh (result is always ≥ 0, so lm has no effect). */
   private sqr(sf: boolean, lm: boolean): void {
@@ -741,6 +758,9 @@ export class GTE {
       case 0x28: // SQR(sf)
         this.sqr(sf, lm);
         break;
+
+      case 0x2d: this.avsz(3); break;
+      case 0x2e: this.avsz(4); break;
 
       case 0x30: // RTPT = RTPS over V0, V1, V2 (no$psx 0280030h)
         this.rtps(this.v[0]!, this.v[1]!, this.v[2]!, sf, lm, false);
