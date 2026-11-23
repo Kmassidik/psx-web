@@ -10,6 +10,7 @@ import { describe, test, expect } from "bun:test";
 import { Memory } from "../src/core/memory";
 import { Cpu } from "../src/core/cpu";
 import { Rcnt } from "../src/core/rcnt";
+import { Machine } from "../src/core/machine";
 import { Dynarec, type CpuState } from "../src/core/dynarec/blocks";
 import { translateBlock, BLOCK_MAX } from "../src/core/dynarec/translator";
 
@@ -106,13 +107,7 @@ function expectParity(words: number[], start: number, end: number) {
   if (cpuB.lo !== cpuA.lo) console.log(`lo: A=${(cpuA.lo>>>0).toString(16)} B=${(cpuB.lo>>>0).toString(16)} pc A=${(cpuA.pc>>>0).toString(16)} B=${(cpuB.pc>>>0).toString(16)}`);
   expect(cpuB.hi).toBe(cpuA.hi);
   expect(cpuB.lo).toBe(cpuA.lo);
-  if (ran) {
-    // KNOWN MODEL DIVERGENCE (documented): the dynarec counts the PS1 branch
-    // pair (branch + delay slot) as 2 cycles; the Phase-1 interpreter counts
-    // 1 per step. Register/memory/pc parity is the correctness gate here;
-    // cycle-exact timing is a Phase-3+ ticket.
-    expect(cpuB.cycles).toBeGreaterThanOrEqual(cpuA.cycles);
-  }
+  if (ran) expect(cpuB.cycles).toBe(cpuA.cycles);
   expect(dyn.compiles).toBeGreaterThan(0);
   return { cpuA, cpuB };
 }
@@ -386,5 +381,130 @@ describe("determinism", () => {
       return [...cpu.r].join(",");
     };
     expect(run()).toBe(run());
+  });
+});
+
+describe("Cpu.run dynarec integration", () => {
+  test("opt-in blocks preserve registers, delay state, PC and counts", () => {
+    const make = () => {
+      const mem = new Memory();
+      const cpu = new Cpu(mem, new Rcnt(), gteStub, noPorts);
+      const prog = [ADDIU(2, 0, 3), LW(1, 0, 0x1000), ADDIU(1, 1, 1), SW(1, 0, 0x1004)];
+      prog.forEach((word, i) => mem.store32(4 * i, word));
+      mem.store32(0x1000, 7);
+      cpu.reset(0);
+      return { cpu, mem };
+    };
+    const a = make(), b = make();
+    expect(b.cpu.dynarecEnabled).toBe(false);
+    expect(a.cpu.run(4)).toBe(true);
+    b.cpu.setDynarecEnabled(true);
+    expect(b.cpu.run(4)).toBe(true);
+    expect([...b.cpu.r]).toEqual([...a.cpu.r]);
+    expect([...b.cpu.cp0]).toEqual([...a.cpu.cp0]);
+    expect(b.cpu.loadDelay).toEqual(a.cpu.loadDelay);
+    expect(b.cpu.inBranchDelay).toBe(a.cpu.inBranchDelay);
+    expect(b.cpu.pc).toBe(a.cpu.pc);
+    expect(b.cpu.nextPc).toBe(a.cpu.nextPc);
+    expect(b.cpu.cycles).toBe(4);
+    expect(b.mem.load32(0x1004)).toBe(a.mem.load32(0x1004));
+  });
+
+  test("unsupported GTE falls back without replaying earlier effects", () => {
+    const mem = new Memory();
+    let gteCalls = 0;
+    const gte = { execute: () => { gteCalls++; }, mfc2: () => 0, mtc2: () => {} };
+    const cpu = new Cpu(mem, new Rcnt(), gte, noPorts);
+    const prog = [ADDIU(1, 0, 1), ((0x12 << 26) | (1 << 25) | 1) >>> 0, SW(1, 0, 0x1000)];
+    prog.forEach((word, i) => mem.store32(4 * i, word));
+    cpu.reset(0);
+    cpu.setDynarecEnabled(true);
+    expect(cpu.run(3)).toBe(true);
+    expect(gteCalls).toBe(1);
+    expect(cpu.r[1]).toBe(1);
+    expect(cpu.cycles).toBe(3);
+    expect(cpu.pc).toBe(12);
+    expect(mem.load32(0x1000)).toBe(1);
+  });
+
+  test("self-modifying SW invalidates an already cached target", () => {
+    const mem = new Memory();
+    const cpu = new Cpu(mem, new Rcnt(), gteStub, noPorts);
+    mem.store32(0, SW(1, 0, 0x100));
+    mem.store32(0x100, LUI(2, 0x111));
+    mem.store32(0x104, SW(2, 0, 0x1000));
+    cpu.reset(0x100);
+    cpu.setDynarecEnabled(true);
+    expect(cpu.run(2)).toBe(true);
+    expect(cpu.r[2]).toBe(0x0111_0000);
+
+    cpu.r[1] = ORI(2, 0, 0x222) | 0;
+    cpu.pc = 0; cpu.nextPc = 4;
+    expect(cpu.run(1)).toBe(true);
+    expect(mem.load32(0x100)).toBe(ORI(2, 0, 0x222));
+    cpu.pc = 0x100; cpu.nextPc = 0x104;
+    expect(cpu.run(2)).toBe(true);
+    expect(cpu.r[2]).toBe(0x222);
+    expect(mem.load32(0x1000)).toBe(0x222);
+  });
+
+  test("block loads and stores use existing MMIO hooks", () => {
+    const mem = new Memory();
+    let reads = 0;
+    const writes: [number, number, number][] = [];
+    const cpu = new Cpu(mem, new Rcnt(), gteStub, {
+      read32: (va) => { expect(va).toBe(0x1f80_1100); reads++; return 0x123; },
+      write32: (va, v, width) => { writes.push([va, v, width]); return true; },
+    });
+    const prog = [LW(1, 3, 0x1100), ADDIU(2, 1, 1), SW(2, 3, 0x1104)];
+    prog.forEach((word, i) => mem.store32(4 * i, word));
+    cpu.reset(0);
+    cpu.r[3] = 0x1f80_0000;
+    cpu.setDynarecEnabled(true);
+    expect(cpu.run(3)).toBe(true);
+    expect(reads).toBe(1);
+    expect(writes).toEqual([[0x1f80_1104, 0x124, 32]]);
+    expect(cpu.r[2]).toBe(0x124);
+  });
+
+  test("HLE syscall executes once through interpreter fallback", () => {
+    const mem = new Memory();
+    const calls: [number, number][] = [];
+    const cpu = new Cpu(mem, new Rcnt(), gteStub, noPorts, (table, fn) => {
+      calls.push([table, fn]);
+      return 0x99;
+    });
+    mem.store32(0xa0, R(0x0c));
+    cpu.reset(0x8000_00a0);
+    cpu.r[9] = 0x42;
+    cpu.r[31] = 0x200;
+    cpu.setDynarecEnabled(true);
+    expect(cpu.run(1)).toBe(true);
+    expect(calls).toEqual([[0xa0, 0x42]]);
+    expect(cpu.r[2]).toBe(0x99);
+    expect(cpu.pc).toBe(0x200);
+    expect(cpu.cycles).toBe(1);
+  });
+
+  test("Machine state roundtrip retains a block-ending load delay", () => {
+    const machine = new Machine();
+    machine.mem.store32(0x100, BEQ(0, 0, 1));
+    machine.mem.store32(0x104, LW(1, 0, 0x1000));
+    machine.mem.store32(0x108, ADDIU(2, 1, 0));
+    machine.mem.store32(0x1000, 0x55);
+    machine.cpu.reset(0x100);
+    machine.setDynarecEnabled(true);
+    expect(machine.cpu.run(2)).toBe(true);
+    expect(machine.cpu.r[1]).toBe(0);
+    expect(machine.cpu.loadDelay).toEqual({ slot: 1, reg: 1, value: 0x55 });
+    expect(machine.cpu.inBranchDelay).toBe(true);
+    const saved = machine.saveState();
+    expect(machine.cpu.run(1)).toBe(true);
+    expect(machine.cpu.r[2]).toBe(0x55);
+    machine.loadState(saved);
+    expect(machine.cpu.loadDelay).toEqual({ slot: 1, reg: 1, value: 0x55 });
+    expect(machine.saveState()).toEqual(saved);
+    expect(machine.cpu.run(1)).toBe(true);
+    expect(machine.cpu.r[2]).toBe(0x55);
   });
 });

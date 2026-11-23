@@ -3,7 +3,7 @@
  * only harmless paths, file names, and user interface preferences are stored.
  */
 export type DisplayScale = "fit" | "integer" | "stretch";
-export type Renderer = "native";
+export type Renderer = "native" | "2x" | "4x";
 
 export const PAD_BUTTONS = [
   "Select", "L3", "R3", "Start", "Up", "Right", "Down", "Left",
@@ -156,7 +156,7 @@ export function validateConfig(value: unknown): PsxConfig {
   cfg.AudioVolume = finiteNumber(source.AudioVolume, cfg.AudioVolume, 0, 1);
   cfg.DisplayScale = source.DisplayScale === "fit" || source.DisplayScale === "integer" || source.DisplayScale === "stretch"
     ? source.DisplayScale : DEFAULT_CONFIG.DisplayScale;
-  cfg.Renderer = "native"; // no other renderer is implemented
+  cfg.Renderer = source.Renderer === "2x" || source.Renderer === "4x" ? source.Renderer : "native";
   return cfg;
 }
 

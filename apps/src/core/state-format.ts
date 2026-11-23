@@ -26,6 +26,7 @@ const gpu = O({
   gp0Mode: N, cmdWords: A(N), cmdLeft: N, primWords: A(N), texPage: N, clutBase: N,
   imgX: N, imgY: N, imgW: N, imgH: N, imgCur: N,
   fillX: N, fillY: N, fillW: N, fillH: N, fillColor: N,
+  clipX1: N, clipY1: N, clipX2: N, clipY2: N, drawOffsetX: N, drawOffsetY: N,
 });
 const cdrom = O({
   regs: T("u8", 16), sectorBuffer: T("u8", 2352),

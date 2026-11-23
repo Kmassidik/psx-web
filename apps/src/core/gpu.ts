@@ -1,4 +1,4 @@
-import { rasterize, PrimVert } from "./gpu-raster";
+import { HighResolutionRaster, rasterize, Prim, PrimVert } from "./gpu-raster";
 
 /**
  * GPU — Phase 1 stub: VRAM + the GP0 commands a PS-X EXE needs to show
@@ -8,8 +8,9 @@ import { rasterize, PrimVert } from "./gpu-raster";
  */
 export const VRAM_W = 1024;
 export const VRAM_H = 512;
+export type GpuRenderScale = 1 | 2 | 4;
 
-/** Native active display rectangle and its tightly packed RGBA8888 pixels. */
+/** Active display rectangle and tightly packed RGBA8888 pixels. x/y are native VRAM coordinates. */
 export interface GpuDisplayFrame {
   readonly x: number;
   readonly y: number;
@@ -20,6 +21,9 @@ export interface GpuDisplayFrame {
   readonly pal: boolean;
   readonly colorDepth: 15 | 24;
   readonly rgba: Uint8Array;
+  readonly scale: GpuRenderScale;
+  /** True only when scaled geometric sampling contributes to this 15-bit frame. */
+  readonly enhancedGeometry: boolean;
 }
 
 interface MutableGpuDisplayFrame {
@@ -32,6 +36,8 @@ interface MutableGpuDisplayFrame {
   pal: boolean;
   colorDepth: 15 | 24;
   rgba: Uint8Array;
+  scale: GpuRenderScale;
+  enhancedGeometry: boolean;
 }
 
 export class Gpu {
@@ -52,8 +58,16 @@ export class Gpu {
   private readonly display: MutableGpuDisplayFrame = {
     x: 0, y: 0, width: 640, height: 480,
     enabled: true, interlaced: false, pal: false, colorDepth: 15,
-    rgba: new Uint8Array(0),
+    rgba: new Uint8Array(0), scale: 1, enhancedGeometry: false,
   };
+  private readonly scaledDisplay: MutableGpuDisplayFrame = {
+    x: 0, y: 0, width: 640, height: 480,
+    enabled: true, interlaced: false, pal: false, colorDepth: 15,
+    rgba: new Uint8Array(0), scale: 2, enhancedGeometry: false,
+  };
+  private highResolution: HighResolutionRaster | null = null;
+  clipX1 = 0; clipY1 = 0; clipX2 = 1023; clipY2 = 511;
+  drawOffsetX = 0; drawOffsetY = 0;
 
   private gp0Mode = 0;
   private cmdWords: number[] = [];
@@ -85,6 +99,14 @@ export class Gpu {
       case 0xc0: // Store image
         this.cmdWords = [w]; this.cmdLeft = 2; break;
       case 0xe1: this.texPage = w & 0xffff; break; // draw mode / texture page
+      case 0xe3:
+        this.clipX1 = w & 0x3ff; this.clipY1 = (w >>> 10) & 0x1ff; break;
+      case 0xe4:
+        this.clipX2 = w & 0x3ff; this.clipY2 = (w >>> 10) & 0x1ff; break;
+      case 0xe5:
+        this.drawOffsetX = ((w & 0x7ff) << 21) >> 21;
+        this.drawOffsetY = (((w >>> 11) & 0x7ff) << 21) >> 21;
+        break;
       case 0x01: this.cmdWords = []; break; // clear cache: no-op
       default:
         if ((top & 0xe0) === 0x60) {
@@ -156,6 +178,12 @@ export class Gpu {
     }
   }
 
+  private drawPrim(prim: Prim): void {
+    // The scaled pass reads the same pre-command native texture/readback VRAM.
+    this.highResolution?.rasterize(this, prim);
+    rasterize(this, prim);
+  }
+
   private rasterizeRect(words: number[]): void {
     const op = words[0]!;
     const top = (op >>> 24) & 0xff;
@@ -182,7 +210,7 @@ export class Gpu {
     }
     const r = op & 0xff, g = (op >>> 8) & 0xff, b = (op >>> 16) & 0xff;
     const vertex = (vx: number, vy: number, vu: number, vv: number) => ({ x: vx, y: vy, r, g, b, u: vu, v: vv });
-    rasterize(this, {
+    this.drawPrim({
       kind: "quad",
       vertices: [
         vertex(x, y, u, v),
@@ -192,10 +220,10 @@ export class Gpu {
       ],
       colorMode: "flat",
       textured,
-      blendMode: 0,
+      blendMode: ((this.texPage >>> 5) & 3) as 0 | 1 | 2 | 3,
       texPage: this.texPage,
       clutBase: this.clutBase,
-      dither: false,
+      dither: (this.texPage & 0x200) !== 0,
       semiTrans: (top & 0x02) !== 0,
     });
   }
@@ -237,15 +265,15 @@ export class Gpu {
         u, v,
       });
     }
-    rasterize(this, {
+    this.drawPrim({
       kind: quad ? "quad" : "tri",
       vertices: verts,
       colorMode: gouraud ? "gouraud" : "flat",
       textured,
-      blendMode: 0,
+      blendMode: ((this.texPage >>> 5) & 3) as 0 | 1 | 2 | 3,
       texPage: this.texPage,
       clutBase: this.clutBase,
-      dither: false,
+      dither: (this.texPage & 0x200) !== 0,
       semiTrans,
     });
     this.primWords = [];
@@ -256,14 +284,22 @@ export class Gpu {
       const px = k === 0 ? w & 0x7fff : (w >>> 16) & 0x7fff;
       const i = this.imgCur++;
       const px_ = i % this.imgW, py = (i / this.imgW) | 0;
-      if (py < this.imgH) this.vram[((this.imgY + py) & 511) * VRAM_W + ((this.imgX + px_) & 1023)] = px;
+      if (py < this.imgH) {
+        const x = (this.imgX + px_) & 1023, y = (this.imgY + py) & 511;
+        this.vram[y * VRAM_W + x] = px;
+        this.highResolution?.writeNativePixel(x, y, px);
+      }
     }
   }
 
   private fillRect(x: number, y: number, w: number, h: number): void {
     for (let yy = 0; yy < h; yy++) {
       const row = ((y + yy) & 511) * VRAM_W;
-      for (let xx = 0; xx < w; xx++) this.vram[row + ((x + xx) & 1023)] = this.fillColor;
+      for (let xx = 0; xx < w; xx++) {
+        const px = (x + xx) & 1023;
+        this.vram[row + px] = this.fillColor;
+        this.highResolution?.writeNativePixel(px, (y + yy) & 511, this.fillColor);
+      }
     }
   }
 
@@ -277,6 +313,8 @@ export class Gpu {
         this.cmdLeft = 0;
         this.texPage = 0;
         this.clutBase = 0;
+        this.clipX1 = 0; this.clipY1 = 0; this.clipX2 = 1023; this.clipY2 = 511;
+        this.drawOffsetX = 0; this.drawOffsetY = 0;
         this.dispEnable = false;
         this.dmaDirection = 0;
         this.displayMode = 0;
@@ -373,13 +411,85 @@ export class Gpu {
   }
 
   /**
-   * Compose the native GP1 active rectangle. The returned object and pixel
-   * buffer are reused; callers must consume/copy rgba before the next frame.
-   * Interlaced modes return both fields as one complete framebuffer image, so
-   * presentation cannot retain a stale field when its cadence differs from
-   * emulated vertical sync.
+   * Compose at native, 2x, or 4x internal resolution. Selecting a new scale
+   * starts from nearest-native pixels; only subsequently rendered geometry is
+   * marked enhanced. Native reads, textures, DMA, and uploads never use the
+   * scaled surface.
    */
-  composeDisplayFrame(): Readonly<GpuDisplayFrame> {
+  composeDisplayFrame(scale: GpuRenderScale = 1): Readonly<GpuDisplayFrame> {
+    if (scale === 1) {
+      this.highResolution = null;
+      return this.composeNativeDisplayFrame();
+    }
+    if (this.highResolution?.scale !== scale) {
+      try {
+        this.highResolution = new HighResolutionRaster(this.vram, scale);
+      } catch {
+        this.highResolution = null;
+        return this.composeNativeDisplayFrame(); // scale=1 exposes unsupported fallback
+      }
+    }
+    const native = this.composeNativeDisplayFrame();
+    const d = this.display, out = this.scaledDisplay, surface = this.highResolution;
+    out.x = d.x; out.y = d.y; out.width = d.width * scale; out.height = d.height * scale;
+    out.enabled = d.enabled; out.interlaced = d.interlaced; out.pal = d.pal;
+    out.colorDepth = d.colorDepth; out.scale = scale;
+    out.enhancedGeometry = d.enabled && d.colorDepth === 15 && surface.enhancedGeometry;
+    const size = out.width * out.height * 4;
+    if (out.rgba.length !== size) {
+      try {
+        out.rgba = new Uint8Array(size);
+      } catch {
+        this.highResolution = null;
+        return native;
+      }
+    }
+    if (!d.enabled) {
+      out.rgba.fill(0);
+      for (let o = 3; o < out.rgba.length; o += 4) out.rgba[o] = 255;
+      return out;
+    }
+    if (!out.enhancedGeometry) {
+      // Fill/upload-only and packed 24-bit frames are explicitly just nearest
+      // native pixels, never advertised as increased internal detail.
+      for (let y = 0; y < d.height; y++) {
+        for (let x = 0; x < d.width; x++) {
+          const source = (y * d.width + x) * 4;
+          for (let dy = 0; dy < scale; dy++) {
+            let o = ((y * scale + dy) * out.width + x * scale) * 4;
+            for (let dx = 0; dx < scale; dx++, o += 4) {
+              out.rgba[o] = native.rgba[source]!; out.rgba[o + 1] = native.rgba[source + 1]!;
+              out.rgba[o + 2] = native.rgba[source + 2]!; out.rgba[o + 3] = 255;
+            }
+          }
+        }
+      }
+      return out;
+    }
+    const sourceStride = VRAM_W * scale;
+    for (let y = 0; y < out.height; y++) {
+      const row = ((d.y * scale + y) & (VRAM_H * scale - 1)) * sourceStride;
+      let o = y * out.width * 4;
+      for (let x = 0; x < out.width; x++, o += 4) {
+        const sourceX = (d.x * scale + x) & (sourceStride - 1);
+        const p = surface.vram[row + sourceX]!;
+        const r5 = p & 31, g5 = (p >> 5) & 31, b5 = (p >> 10) & 31;
+        out.rgba[o] = (r5 << 3) | (r5 >> 2);
+        out.rgba[o + 1] = (g5 << 3) | (g5 >> 2);
+        out.rgba[o + 2] = (b5 << 3) | (b5 >> 2);
+        out.rgba[o + 3] = 255;
+      }
+    }
+    return out;
+  }
+
+  /** Rebuild presentation pixels after state restore or direct native VRAM writes. */
+  invalidateHighResolution(): void {
+    this.highResolution?.invalidate();
+  }
+
+  /** Compose the native GP1 active rectangle; the returned buffer is reused. */
+  private composeNativeDisplayFrame(): Readonly<GpuDisplayFrame> {
     const d = this.display;
     const size = d.width * d.height * 4;
     if (d.rgba.length !== size) d.rgba = new Uint8Array(size);

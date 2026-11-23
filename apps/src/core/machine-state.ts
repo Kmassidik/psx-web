@@ -9,6 +9,8 @@ interface GpuState {
   gp0Mode: number; cmdWords: number[]; cmdLeft: number; primWords: number[];
   texPage: number; clutBase: number; imgX: number; imgY: number; imgW: number; imgH: number;
   imgCur: number; fillX: number; fillY: number; fillW: number; fillH: number; fillColor: number;
+  clipX1: number; clipY1: number; clipX2: number; clipY2: number;
+  drawOffsetX: number; drawOffsetY: number;
 }
 interface CdromState {
   regs: Uint8Array; sectorBuffer: Uint8Array; paramFifo: number[]; respFifo: number[];
@@ -125,6 +127,8 @@ export function captureMachineState(m: Machine): MachineState {
       primWords: g.primWords.slice(), texPage: g.texPage, clutBase: g.clutBase,
       imgX: g.imgX, imgY: g.imgY, imgW: g.imgW, imgH: g.imgH, imgCur: g.imgCur,
       fillX: g.fillX, fillY: g.fillY, fillW: g.fillW, fillH: g.fillH, fillColor: g.fillColor,
+      clipX1: g.clipX1, clipY1: g.clipY1, clipX2: g.clipX2, clipY2: g.clipY2,
+      drawOffsetX: g.drawOffsetX, drawOffsetY: g.drawOffsetY,
     },
     spu: {
       regs: sp.regs.slice(), ram: sp.ram.slice(), endx: sp.endx, transferAddr: sp.transferAddr,
@@ -202,6 +206,9 @@ export function restoreMachineState(m: Machine, s: MachineState): void {
   g.primWords = gs.primWords.slice(); g.texPage = gs.texPage; g.clutBase = gs.clutBase;
   g.imgX = gs.imgX; g.imgY = gs.imgY; g.imgW = gs.imgW; g.imgH = gs.imgH; g.imgCur = gs.imgCur;
   g.fillX = gs.fillX; g.fillY = gs.fillY; g.fillW = gs.fillW; g.fillH = gs.fillH; g.fillColor = gs.fillColor;
+  g.clipX1 = gs.clipX1; g.clipY1 = gs.clipY1; g.clipX2 = gs.clipX2; g.clipY2 = gs.clipY2;
+  g.drawOffsetX = gs.drawOffsetX; g.drawOffsetY = gs.drawOffsetY;
+  m.gpu.invalidateHighResolution();
 
   const sp = spuInternal(m), ss = s.spu;
   sp.regs.set(ss.regs); sp.ram.set(ss.ram); sp.endx = ss.endx; sp.transferAddr = ss.transferAddr;

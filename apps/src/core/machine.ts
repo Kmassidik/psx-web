@@ -88,7 +88,11 @@ export class Machine {
   /** DmaBus adapter: DMA reads/writes RAM words and drives GP0. */
   private readonly dmaBus = {
     readRam: (a: number) => this.mem.load32(a & 0x1f_fffc),
-    writeRam: (a: number, v: number) => this.mem.store32(a & 0x1f_fffc, v),
+    writeRam: (a: number, v: number) => {
+      const address = a & 0x1f_fffc;
+      this.mem.store32(address, v);
+      this.cpu.invalidateCode(address, address + 4);
+    },
     gpuWrite: (w: number) => this.gpu.writeGP0(w),
     mdecIn: (w: number) => this.mdec.pushWord(w),
     mdecOut: () => this.mdec.readOutput()[0] ?? 0,
@@ -102,6 +106,11 @@ export class Machine {
       this.gpu.vram[addr & (VRAM_W * VRAM_H - 1)] = v & 0x7fff;
     },
   };
+
+  /** Enable cached CPU blocks; interrupt/event handlers remain interpreted. */
+  setDynarecEnabled(enabled: boolean): void {
+    this.cpu.setDynarecEnabled(enabled);
+  }
 
   setSectorProvider(provider: SectorProvider): void {
     this.cdrom.setSectorProvider(provider);
@@ -231,6 +240,8 @@ export class Machine {
     this.cpu.pc = entry;
     this.cpu.nextPc = (entry + 4) | 0;
     this.cpu.r[31] = 0x8000_0110;
+    // Keep handlers interpreted: their per-instruction RCNT ticking and GTE /
+    // HLE / CP0 behavior must not be coarsened to block-granular timing.
     for (let i = 0; i < 1_000_000 && this.cpu.pc !== 0x8000_0110; i++) {
       const handlerPc = this.cpu.pc >>> 0;
       const vector = handlerPc & 0x1fff_ffff;
@@ -266,6 +277,7 @@ export class Machine {
     if (deliverException) {
       this.cpu.exception(0, 0x400);
       this.mem.store32(0x84, 0x4200_0010);
+      this.cpu.invalidateCode(0x84, 0x88);
     }
     const ok = this.cpu.run(n);
     if (deliverException) this.runHandler(this.kernel.exceptionHook());
@@ -347,6 +359,7 @@ export class Machine {
     this.mem.store32(0x84, 0x4200_0010);
     this.mem.store32(0x88, 0x0340_0008);
     this.mem.store32(0x8c, 0);
+    this.cpu.flushDynarec();
   }
 
   /** load_bios spec (0x433540): fread(psxBIOS, 1, 0x80000) — 512 KiB max. */
@@ -369,6 +382,7 @@ export class Machine {
     // The schema decoder supplies the runtime validation for this trusted shape.
     const state = decodeState(bytes, MACHINE_STATE_SCHEMA) as MachineState;
     restoreMachineState(this, state);
+    this.cpu.flushDynarec();
   }
 
   /** Legacy lightweight snapshot retained for existing diagnostic callers. */
@@ -414,6 +428,7 @@ export class Machine {
     this.rcnt.regs.set(s.rcnt);
     this.irqStatus = s.irqStatus;
     this.irqMask = s.irqMask;
+    this.cpu.flushDynarec();
   }
 }
 

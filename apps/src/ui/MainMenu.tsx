@@ -260,8 +260,8 @@ export function MainMenu(props: MainMenuProps) {
           ))}
         </MenuItem>
         <MenuItem label="CPU Mode">
-          <MenuItem label="Dynarec (fast)" checked={false} disabled reason="The dynarec is not connected to the running Machine." />
-          <MenuItem label="Interpreter (Accurate)" checked disabled reason="The interpreter is the fixed execution mode in this build." />
+          <MenuItem label="Dynarec (fast)" checked={config.Dynarec} action={() => setConfig({ Dynarec: true })} />
+          <MenuItem label="Interpreter (Accurate)" checked={!config.Dynarec} action={() => setConfig({ Dynarec: false })} />
         </MenuItem>
         <MenuItem label="GTE hacks">
           <MenuItem label="Widescreen" checked={false} disabled reason={unavailable("The widescreen GTE hack")} />

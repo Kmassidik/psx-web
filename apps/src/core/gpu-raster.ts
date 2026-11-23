@@ -8,7 +8,10 @@
  *   Rendering Attributes: X bits 0-10, Y bits 16-26, each -1024..+1023);
  *   pixels outside the drawing area are discarded. Drawing area read from
  *   (gpu as any).clipX1/clipY1/clipX2/clipY2 (inclusive), default
- *   0/0/1023/511, hard-clamped to VRAM bounds.
+ *   0/0/1023/511, hard-clamped to VRAM bounds. Signed draw offsets are added
+ *   after coordinate decoding. HighResolutionRaster scales only geometry and
+ *   the inclusive clip: UVs/CLUT/pages remain native and dither keeps its
+ *   native 4×4 phase.
  * - Rasterization: scanline integer DDA. ALL interpolation runs in 16.16
  *   fixed point on integers (Math.round only on exact integer ratios; the
  *   final ceil/floor for span ends operate on exact integer/2^16 values in
@@ -100,6 +103,19 @@ interface ClipRect {
   y1: number;
   x2: number;
   y2: number;
+}
+
+interface DrawOffset {
+  x: number;
+  y: number;
+}
+
+function drawOffset(gpu: { vram: Uint16Array }): DrawOffset {
+  const g = gpu as unknown as Partial<Record<string, number | undefined>>;
+  return {
+    x: typeof g.drawOffsetX === "number" ? g.drawOffsetX : 0,
+    y: typeof g.drawOffsetY === "number" ? g.drawOffsetY : 0,
+  };
 }
 
 /** round(a*b/den) on exact integers (double holds these exactly). */
@@ -204,9 +220,12 @@ function sampleTexel(vram: Uint16Array, prim: Prim, u: number, v: number): Texel
 /** One output pixel: shade (texture-modulate + dither + 5-bit), blend, write. */
 function putPixel(
   vram: Uint16Array,
+  stride: number,
   prim: Prim,
   x: number,
   y: number,
+  ditherX: number,
+  ditherY: number,
   r8: number,
   g8: number,
   b8: number,
@@ -220,15 +239,15 @@ function putPixel(
       const f = (t8 * c8) >> 7;
       return f > 255 ? 255 : f;
     };
-    r5 = to5(mod(texel.c & 31, r8), x, y, prim.dither);
-    g5 = to5(mod((texel.c >> 5) & 31, g8), x, y, prim.dither);
-    b5 = to5(mod((texel.c >> 10) & 31, b8), x, y, prim.dither);
+    r5 = to5(mod(texel.c & 31, r8), ditherX, ditherY, prim.dither);
+    g5 = to5(mod((texel.c >> 5) & 31, g8), ditherX, ditherY, prim.dither);
+    b5 = to5(mod((texel.c >> 10) & 31, b8), ditherX, ditherY, prim.dither);
   } else {
-    r5 = to5(r8, x, y, prim.dither);
-    g5 = to5(g8, x, y, prim.dither);
-    b5 = to5(b8, x, y, prim.dither);
+    r5 = to5(r8, ditherX, ditherY, prim.dither);
+    g5 = to5(g8, ditherX, ditherY, prim.dither);
+    b5 = to5(b8, ditherX, ditherY, prim.dither);
   }
-  const idx = y * 1024 + x;
+  const idx = y * stride + x;
   const back = vram[idx]!;
   const stp = texel !== null && texel.stp;
   if (!prim.semiTrans && !stp) {
@@ -267,7 +286,11 @@ function putPixel(
 
 function drawTri(
   vram: Uint16Array,
+  textureVram: Uint16Array,
+  stride: number,
+  scale: 1 | 2 | 4,
   clip: ClipRect,
+  offset: DrawOffset,
   prim: Prim,
   v0: PrimVert,
   v1: PrimVert,
@@ -276,6 +299,10 @@ function drawTri(
   let A = decVert(v0);
   let B = decVert(v1);
   let C = decVert(v2);
+  // Texture coordinates stay in native texel space; only geometry is scaled.
+  A.x = (A.x + offset.x) * scale; A.y = (A.y + offset.y) * scale;
+  B.x = (B.x + offset.x) * scale; B.y = (B.y + offset.y) * scale;
+  C.x = (C.x + offset.x) * scale; C.y = (C.y + offset.y) * scale;
   if (prim.colorMode === "flat") {
     // Flat: whole primitive uses vertex 0's color (PS1 flat3/flat4 family).
     B.r = A.r;
@@ -325,13 +352,16 @@ function drawTri(
       const lerp = (l: number, r: number): number =>
         den > 0 ? l + mulDiv(r - l, num, den) : l;
       const texel = prim.textured
-        ? sampleTexel(vram, prim, lerp(L.uf, R.uf) >> 16, lerp(L.vf, R.vf) >> 16)
+        ? sampleTexel(textureVram, prim, lerp(L.uf, R.uf) >> 16, lerp(L.vf, R.vf) >> 16)
         : null;
       putPixel(
         vram,
+        stride,
         prim,
         x,
         y,
+        (x / scale) | 0,
+        (y / scale) | 0,
         lerp(L.rf, R.rf) >> 16,
         lerp(L.gf, R.gf) >> 16,
         lerp(L.bf, R.bf) >> 16,
@@ -356,19 +386,83 @@ function readClip(gpu: { vram: Uint16Array }): ClipRect {
   };
 }
 
-/** Rasterize one polygon primitive into gpu.vram (15bpp BGR555). */
-export function rasterize(gpu: { vram: Uint16Array }, prim: Prim): void {
-  const clip = readClip(gpu);
-  if (clip.x2 < clip.x1 || clip.y2 < clip.y1) return;
-  const vram = gpu.vram;
+function rasterizeInternal(
+  gpu: { vram: Uint16Array },
+  output: Uint16Array,
+  scale: 1 | 2 | 4,
+  prim: Prim,
+): void {
+  const nativeClip = readClip(gpu);
+  if (nativeClip.x2 < nativeClip.x1 || nativeClip.y2 < nativeClip.y1) return;
+  const clip = {
+    x1: nativeClip.x1 * scale,
+    y1: nativeClip.y1 * scale,
+    x2: (nativeClip.x2 + 1) * scale - 1,
+    y2: (nativeClip.y2 + 1) * scale - 1,
+  };
+  const offset = drawOffset(gpu);
+  const stride = 1024 * scale;
   const v = prim.vertices;
+  const tri = (a: PrimVert, b: PrimVert, c: PrimVert): void =>
+    drawTri(output, gpu.vram, stride, scale, clip, offset, prim, a, b, c);
   if (prim.kind === "tri") {
     if (v.length < 3) return;
-    drawTri(vram, clip, prim, v[0]!, v[1]!, v[2]!);
+    tri(v[0]!, v[1]!, v[2]!);
   } else {
     // Quad: two triangles sharing the v1-v2 diagonal (PS1 decomposition).
     if (v.length < 4) return;
-    drawTri(vram, clip, prim, v[0]!, v[1]!, v[2]!);
-    drawTri(vram, clip, prim, v[1]!, v[2]!, v[3]!);
+    tri(v[0]!, v[1]!, v[2]!);
+    tri(v[1]!, v[2]!, v[3]!);
+  }
+}
+
+/** Rasterize one polygon primitive into native gpu.vram (15bpp BGR555). */
+export function rasterize(gpu: { vram: Uint16Array }, prim: Prim): void {
+  rasterizeInternal(gpu, gpu.vram, 1, prim);
+}
+
+/**
+ * Presentation-only scaled framebuffer. Native VRAM remains the sole texture
+ * and game-readback source; native fills/uploads are explicitly replicated.
+ */
+export class HighResolutionRaster {
+  readonly vram: Uint16Array;
+  enhancedGeometry = false;
+
+  constructor(private readonly nativeVram: Uint16Array, readonly scale: 2 | 4) {
+    this.vram = new Uint16Array(1024 * scale * 512 * scale);
+    this.invalidate();
+  }
+
+  invalidate(): void {
+    const s = this.scale, width = 1024 * s;
+    for (let y = 0; y < 512; y++) {
+      const source = y * 1024, dest = y * s * width;
+      let o = dest;
+      for (let x = 0; x < 1024; x++) {
+        const p = this.nativeVram[source + x]!;
+        for (let dx = 0; dx < s; dx++) this.vram[o++] = p;
+      }
+      for (let dy = 1; dy < s; dy++) {
+        const row = dest + dy * width;
+        for (let x = 0; x < width; x++) this.vram[row + x] = this.vram[dest + x]!;
+      }
+    }
+    this.enhancedGeometry = false;
+  }
+
+  writeNativePixel(x: number, y: number, color: number): void {
+    const s = this.scale, width = 1024 * s;
+    const left = (x & 1023) * s, top = (y & 511) * s;
+    for (let dy = 0; dy < s; dy++) {
+      let o = (top + dy) * width + left;
+      for (let dx = 0; dx < s; dx++) this.vram[o++] = color;
+    }
+  }
+
+  rasterize(gpu: { vram: Uint16Array }, prim: Prim): void {
+    if (prim.vertices.length < (prim.kind === "tri" ? 3 : 4)) return;
+    rasterizeInternal(gpu, this.vram, this.scale, prim);
+    this.enhancedGeometry = true;
   }
 }

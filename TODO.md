@@ -8,7 +8,7 @@ Detailed execution plan for turning the current emulator checkpoint into a relia
 - 3Xtreme reaches `FE.EXE` → `GAME.EXE` and draws a red loading bar: 1,560 nonblack pixels.
 - 3Xtreme has **not** reached a title screen or gameplay; do not describe it as playable.
 - The BIOS-free/HLE route is selected. A real BIOS remains optional and user-supplied.
-- Latest full-suite checkpoint: 356 tests passing and TypeScript clean; repeatable browser E2E also passes.
+- Latest full-suite checkpoint: 370 tests passing and TypeScript clean; repeatable browser E2E also passes.
 - RCNT MMIO and handler timer waits are fixed; extended runs transfer full CD sectors without the previous invalid control flow.
 - Game images and BIOS files stay local and ignored. Emulation remains client-side.
 - Source files should remain below 600 lines; split modules by responsibility instead of growing monoliths.
@@ -200,7 +200,7 @@ Detailed execution plan for turning the current emulator checkpoint into a relia
 
 **Acceptance:** At common desktop and mobile viewport sizes, the active game image fills the available area according to the selected mode, remains centered, and enters/exits fullscreen without distortion or a blank canvas.
 
-### [ ] 3.3 Add optional high internal-resolution rendering
+### [x] 3.3 Add optional high internal-resolution rendering
 
 **Goal:** Provide real increased geometric detail rather than enlarged native pixels.
 
@@ -253,7 +253,7 @@ Detailed execution plan for turning the current emulator checkpoint into a relia
 
 **Acceptance:** Peripheral ordering is deterministic across runs, timer/VSync tests pass at documented rates, and long runs do not accumulate avoidable timing drift.
 
-### [ ] 4.3 Pace emulation independently from display refresh
+### [x] 4.3 Pace emulation independently from display refresh
 
 **Goal:** Run at the emulated console’s speed on 60/120/144 Hz displays and throttled tabs.
 

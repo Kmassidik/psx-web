@@ -9,6 +9,7 @@ import { bindAudioUnlock } from "./audio";
 import { loadStoredSaveState, storeSaveState } from "./save-state-storage";
 import { GamepadInput } from "./gamepad-input";
 import { attachStoredMemoryCards } from "./memory-card-storage";
+import { CycleBudget } from "./cycle-budget";
 import { PAD_BUTTONS, type PsxConfig } from "../state/config";
 import { getState, setConfig, setState, useApp } from "./store";
 import { DisplaySurface } from "./DisplaySurface";
@@ -76,11 +77,13 @@ export function MainWindow() {
     let frames = 0;
     let lastFps = performance.now();
     let lastCycleTime = lastFps;
-    let cycleBudget = 0;
+    const cycleBudget = new CycleBudget();
 
     const present = () => {
       if (machineRef.current !== machine || !nativeContext || !context) return;
-      const frame = machine.gpu.composeDisplayFrame();
+      const renderer = configRef.current.Renderer;
+      const scale = renderer === "2x" ? 2 : renderer === "4x" ? 4 : 1;
+      const frame = machine.gpu.composeDisplayFrame(scale);
       if (nativeCanvas.width !== frame.width || nativeCanvas.height !== frame.height) {
         nativeCanvas.width = frame.width;
         nativeCanvas.height = frame.height;
@@ -100,11 +103,8 @@ export function MainWindow() {
       const cycleNow = performance.now();
       const elapsed = Math.min(100, Math.max(0, cycleNow - lastCycleTime));
       lastCycleTime = cycleNow;
-      cycleBudget = Math.min(cycleBudget + elapsed * 33_868.8, 3_386_880);
-      while (cycleBudget >= 20_000) {
-        machine.runSlice(20_000);
-        cycleBudget -= 20_000;
-      }
+      const slices = cycleBudget.advance(elapsed);
+      for (let slice = 0; slice < slices; slice++) machine.runSlice(20_000);
       present();
       frames++;
       const now = performance.now();
@@ -134,6 +134,7 @@ export function MainWindow() {
         attachStoredMemoryCards(m, [configRef.current.Memcard1, configRef.current.Memcard2]);
         gamepadInput.attach(m);
         m.setAudioSink(audio);
+        m.setDynarecEnabled(configRef.current.Dynarec);
         m.loadBios(bytes);
         machineRef.current = m;
         bootSourceRef.current = { buffer: buf, name, mode };
@@ -148,6 +149,7 @@ export function MainWindow() {
       attachStoredMemoryCards(m, [configRef.current.Memcard1, configRef.current.Memcard2]);
       gamepadInput.attach(m);
       m.setAudioSink(audio);
+      m.setDynarecEnabled(configRef.current.Dynarec);
       if (name.toLowerCase().endsWith(".mdf")) {
         const provider = createMdfSectorProvider(bytes);
         m.setSectorProvider(provider);
@@ -333,6 +335,7 @@ export function MainWindow() {
 
   useEffect(() => audio.setVolume(config.AudioVolume), [audio, config.AudioVolume]);
   useEffect(() => audio.setMuted(muted), [audio, muted]);
+  useEffect(() => machineRef.current?.setDynarecEnabled(config.Dynarec), [config.Dynarec]);
 
   const onPick = useCallback((files: FileList | null, mode: FileMode) => {
     const file = files?.[0];
@@ -451,8 +454,8 @@ export function MainWindow() {
       {dialog === "about" && (
         <Dialog title="About ePSXe Web" onClose={() => setDialog(null)} showCancel={false} okLabel="Close">
           <div className="about-content">
-            <p>A client-side PlayStation emulator with a native-resolution renderer.</p>
-            <p>Display scaling changes presentation only, not emulated detail.</p>
+            <p>A client-side PlayStation emulator with Native, 2×, and 4× geometric rendering.</p>
+            <p>Display scaling changes presentation only; internal resolution changes geometric sampling.</p>
           </div>
         </Dialog>
       )}

@@ -57,6 +57,7 @@ const provider = (lba: number) => {
   return data;
 };
 const machine = new Machine();
+if (args.includes("--dynarec")) machine.setDynarecEnabled(true);
 machine.setSectorProvider(provider);
 
 const frontendBytes = readIsoFile(provider, "cdrom:\\FE.EXE;1");
@@ -135,6 +136,7 @@ for (let i = 0; i < slices; i++) {
   completedSlices = i + 1;
   if (fast) {
     if (i % 100 === 0 || i === slices - 1) checkpoints.push(checkpoint(i + 1));
+    if ((i + 1) % 5_000 === 0) console.log(`progress ${i + 1}/${slices} ${checkpoints.at(-1)?.pc} nonBlack=${checkpoints.at(-1)?.nonBlack}`);
     continue;
   }
   const current = checkpoint(i + 1, false);

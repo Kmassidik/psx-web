@@ -20,8 +20,8 @@
  * Delay slot: a branch/jump consumes the NEXT fetch as its delay slot and the
  * block exits after it. PS1 load delay (one slot) is reproduced exactly: a
  * load's value lands in the target register at the top of the NEXT emitted
- * instruction (interpreter step() order), or in the exit sync if the load was
- * the block's last instruction.
+ * instruction (interpreter step() order), or exported as a pending slot if the
+ * load was the block's last instruction.
  *
  * Exit convention: control flow converges on one epilogue via a local
  * holding the runtime exit pc (fall-through constant patched inside the
@@ -39,7 +39,19 @@ export const OFF_NEXT_PC = 132; // word 33
 export const OFF_HI = 136; // word 34 (untouched by this tier)
 export const OFF_LO = 140; // word 35 (untouched by this tier)
 export const OFF_CYCLES = 144; // word 36
-export const STATE_WORDS = 37;
+export const OFF_LOAD_SLOT = 148;
+export const OFF_LOAD_REG = 152;
+export const OFF_LOAD_VALUE = 156;
+export const OFF_BRANCH_DELAY = 160;
+export const STATE_WORDS = 41;
+
+/** Optional translation metadata used by the host instruction budget. */
+export interface TranslationInfo {
+  instructions: number;
+}
+
+/** A translation failure that is safe to retry with the interpreter. */
+export class UnsupportedInstructionError extends Error {}
 
 export interface DynarecHooks {
   read32(va: number): number;
@@ -59,7 +71,8 @@ const L_CYC = 35; // running cycle count for the block
 const L_MEMTMP = 36; // i32.store operand-order scratch
 const L_EXITPC = 37; // runtime exit pc (branches overwrite; +=4 per instr)
 const L_NEXTPC = 38; // runtime nextPc shadow (+=4 per instr; targets when taken)
-const LOCALS = 39;
+const L_BRANCH_DELAY = 39; // interpreter keeps this flag set after a transfer
+const LOCALS = 40;
 
 function regGet(t: Translator, i: number): void {
   t.code.push(OP.LOCAL_GET);
@@ -172,13 +185,13 @@ class Translator {
             regSet(this, L_NEXTPC);
             this.transfer = true;
             return "branch";
-          case 0x09: { // JALR — link = instr addr + 8, exit pc = r[rs]
-            this.const32(atPc + 4);
-            this.setGPR(rd);
+          case 0x09: { // JALR — read the target before writing rd (rs may equal rd)
             regGet(this, rs);
             regSet(this, L_EXITPC);
             regGet(this, rs); this.const32(4); this.code.push(OP.I32_ADD);
             regSet(this, L_NEXTPC);
+            this.const32(atPc + 4);
+            this.setGPR(rd);
             this.transfer = true;
             return "branch";
           }
@@ -211,14 +224,12 @@ class Translator {
             regGet(this, rs); regGet(this, rt); this.code.push(OP.I32_LT_S);
             this.setGPR(rd);
             return "simple";
-          case 0x2b: // SLTU — unsigned via unsigned-compare: both >>1, 49 = lt_u
-            regGet(this, rs); this.const32(1); this.code.push(OP.I32_SHR_U);
-            regGet(this, rt); this.const32(1); this.code.push(OP.I32_SHR_U);
-            this.code.push(OP.I32_LT_U);
+          case 0x2b: // SLTU — 49 = i32.lt_u
+            regGet(this, rs); regGet(this, rt); this.code.push(OP.I32_LT_U);
             this.setGPR(rd);
             return "simple";
           default:
-            throw new Error(`dynarec: unsupported SPECIAL fn 0x${fn.toString(16)} (instr 0x${(instr >>> 0).toString(16)})`);
+            throw new UnsupportedInstructionError(`dynarec: unsupported SPECIAL fn 0x${fn.toString(16)} (instr 0x${(instr >>> 0).toString(16)})`);
         }
 
       case 0x09: // ADDIU — 41 = i32.const, 6a = i32.add
@@ -230,9 +241,7 @@ class Translator {
         this.setGPR(rt);
         return "simple";
       case 0x0b: // SLTIU — unsigned compare against sign-extended imm
-        regGet(this, rs); this.const32(1); this.code.push(OP.I32_SHR_U);
-        this.const32(uimm | 0); this.const32(1); this.code.push(OP.I32_SHR_U);
-        this.code.push(OP.I32_LT_U);
+        regGet(this, rs); this.const32(simm); this.code.push(OP.I32_LT_U);
         this.setGPR(rt);
         return "simple";
       case 0x0c: // ANDI — zero-extended imm
@@ -253,12 +262,15 @@ class Translator {
         return "simple";
 
       case 0x23: { // LW — address = r[rs]+simm; value lands next instruction
-        if (rt === 0) return "simple"; // interpreter still reads; value discarded
         regGet(this, rs); this.const32(simm); this.code.push(OP.I32_ADD);
         regSet(this, L_ADDR);
         regGet(this, L_ADDR); this.code.push(OP.CALL); uleb(this.code, 0); // env.read32(va)
         regSet(this, L_VALUE);
-        this.LD = { reg: rt, val: L_VALUE };
+        // The interpreter retains the latest load's reg/value even after its
+        // pending slot lands, so keep that metadata independently of LD.
+        this.const32(OFF_LOAD_REG); this.const32(rt); this.storeState();
+        this.const32(OFF_LOAD_VALUE); regGet(this, L_VALUE); this.storeState();
+        if (rt !== 0) this.LD = { reg: rt, val: L_VALUE };
         return "simple";
       }
 
@@ -281,7 +293,7 @@ class Translator {
         return this.emitBranch(op, instr, atPc, rs, rt, i);
 
       default:
-        throw new Error(`dynarec: unsupported opcode 0x${op.toString(16)} at pc 0x${(this.startPc + 4 * i) >>> 0} (instr 0x${(instr >>> 0).toString(16)})`);
+        throw new UnsupportedInstructionError(`dynarec: unsupported opcode 0x${op.toString(16)} at pc 0x${(this.startPc + 4 * i) >>> 0} (instr 0x${(instr >>> 0).toString(16)})`);
     }
   }
 
@@ -315,9 +327,9 @@ class Translator {
 
     // Conditional branch family. Defaults are the fall-through values; the
     // `if` patches both shadows when taken.
-    const exitFall = (this.startPc + 4 * (i + 1)) | 0;
+    const exitFall = (this.startPc + 4 * (i + 2)) | 0;
     this.const32(exitFall);
-    regSet(this, L_EXITPC); // default: fall through
+    regSet(this, L_EXITPC); // default: instruction after the delay slot
     this.const32(exitFall + 4);
     regSet(this, L_NEXTPC); // default nextPc
     switch (op) {
@@ -340,7 +352,7 @@ class Translator {
           // BGEZ/BGEZAL — 4e = i32.ge_s vs 0
           regGet(this, rs); this.const32(0); this.code.push(OP.I32_GE_S);
         } else {
-          throw new Error(`dynarec: unsupported REGIMM rt 0x${rt.toString(16)} (instr 0x${(instr >>> 0).toString(16)})`);
+          throw new UnsupportedInstructionError(`dynarec: unsupported REGIMM rt 0x${rt.toString(16)} (instr 0x${(instr >>> 0).toString(16)})`);
         }
         break;
     }
@@ -356,16 +368,7 @@ class Translator {
 
   /** Converging epilogue: sync state, call env.exit, unreachable. */
   private emitExit(): void {
-    // GPR writeback: mirrors hold the state as of the last emitted
-    // instruction. The load-delay flush (below) applies on top — the mirror
-    // for LD.reg is SKIPPED so the flushed value is not clobbered by the
-    // stale mirror.
-    const skipReg = -1; // mirrors now hold the landed values; write them all
-    // flush FIRST: its store writes the image directly; the mirror loop
-    // then skips LD.reg so the stale mirror cannot clobber the flushed value.
-    this.flushLoadDelay();
     for (let reg = 1; reg < 32; reg++) {
-      if (reg === skipReg) continue;
       this.const32(OFF_R + 4 * reg);
       regGet(this, reg);
       this.storeState();
@@ -379,6 +382,11 @@ class Translator {
     this.const32(OFF_NEXT_PC);
     regGet(this, L_NEXTPC);
     this.storeState();
+    // A load in the final instruction (including a delay slot) is still
+    // pending. Keep it out of the GPR mirror and export the delay slot so the
+    // next block or interpreter step publishes it at the correct boundary.
+    this.const32(OFF_LOAD_SLOT); this.const32(this.LD ? 1 : 0); this.storeState();
+    this.const32(OFF_BRANCH_DELAY); regGet(this, L_BRANCH_DELAY); this.storeState();
     this.code.push(OP.CALL); uleb(this.code, 2); // env.exit()
     this.code.push(OP.UNREACHABLE); // 0x00 — exit never returns
   }
@@ -399,6 +407,9 @@ class Translator {
     regSet(this, L_EXITPC);
     this.const32((startPc + 4) | 0);
     regSet(this, L_NEXTPC);
+    this.const32(OFF_BRANCH_DELAY);
+    this.code.push(OP.I32_LOAD); uleb(this.code, 2); uleb(this.code, 0);
+    regSet(this, L_BRANCH_DELAY);
 
     let i = 0;
     let done = false;
@@ -411,19 +422,18 @@ class Translator {
       regAddConst(this, L_EXITPC, 4);
       regAddConst(this, L_NEXTPC, 4);
       const instr = fetch(startPc + 4 * i) | 0;
-      console.log("[dt] emit i=" + i + " instr=0x" + (instr >>> 0).toString(16));
       const kind = this.emitInstr(instr, i);
-      console.log("[dt] last6=" + this.code.slice(-6).map((b: number) => b.toString(16)).join(" "));
       if (kind === "store") {
         i++;
         done = true;
       } else if (kind === "branch") {
+        this.const32(1); regSet(this, L_BRANCH_DELAY);
         i++; // delay slot executes no matter what
         this.flushLoadDelay();
         regAddConst(this, L_CYC, 1); // the delay slot executes a cycle too
         const d = fetch(startPc + 4 * i) | 0;
         if (this.emitInstr(d, i) !== "simple") {
-          throw new Error(`dynarec: control transfer in delay slot at pc 0x${(startPc + 4 * i) >>> 0}`);
+          throw new UnsupportedInstructionError(`dynarec: control transfer in delay slot at pc 0x${(startPc + 4 * i) >>> 0}`);
         }
         i++;
         done = true;
@@ -431,7 +441,6 @@ class Translator {
         i++;
       }
     }
-    if (!done) this.flushLoadDelay();
     this.n = i;
     this.emitExit();
   }
@@ -442,9 +451,12 @@ class Translator {
  * through `fetch` (virtual address → word). Returns the wasm binary.
  * Throws if the block contains an instruction outside the supported set.
  */
-export function translateBlock(fetch: (a: number) => number, startPc: number): Uint8Array<ArrayBuffer> {
+export function translateBlock(
+  fetch: (a: number) => number, startPc: number, info?: TranslationInfo,
+): Uint8Array<ArrayBuffer> {
   const t = new Translator();
   t.translate(fetch, startPc);
+  if (info) info.instructions = t.n;
 
   const localsDecl: number[] = [];
   uleb(localsDecl, 1); // one local group
@@ -493,9 +505,9 @@ export interface BlockExports {
 
 /** Compile a block with host hooks; returns the ready-to-run instance. */
 export function compileBlock(
-  fetch: (a: number) => number, startPc: number, hooks: DynarecHooks,
+  fetch: (a: number) => number, startPc: number, hooks: DynarecHooks, info?: TranslationInfo,
 ): WebAssembly.Instance {
-  const bytes: Uint8Array<ArrayBuffer> = translateBlock(fetch, startPc);
+  const bytes: Uint8Array<ArrayBuffer> = translateBlock(fetch, startPc, info);
   const module = new WebAssembly.Module(bytes);
   return new WebAssembly.Instance(module, {
     env: { read32: hooks.read32, write32: hooks.write32, exit: hooks.exit, memory: hooks.memory },

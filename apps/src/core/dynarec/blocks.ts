@@ -7,11 +7,14 @@
  * written range; flush() clears everything (e.g. BIOS swap). The chief wires
  * Memory stores → dynarec.invalidate so self-modifying code re-translates.
  *
- * State image: the cache owns the 37-word CPU image at the start of its own
+ * State image: the cache owns the 41-word CPU image at the start of its own
  * 1-page linear memory; the host syncs r/pc/nextPc/hi/lo/cycles in and out
  * around each runBlock (runState/loadState).
  */
-import { compileBlock, runBlock, STATE_WORDS, type DynarecHooks } from "./translator";
+import {
+  compileBlock, runBlock, STATE_WORDS, OFF_LOAD_SLOT, OFF_LOAD_REG,
+  OFF_LOAD_VALUE, OFF_BRANCH_DELAY, type DynarecHooks, type TranslationInfo,
+} from "./translator";
 
 export const STATE_SIZE = STATE_WORDS; // words in the state image
 
@@ -23,6 +26,8 @@ export interface CpuState {
   hi: number;
   lo: number;
   cycles: number;
+  loadDelay?: { slot: number; reg: number; value: number };
+  inBranchDelay?: boolean;
 }
 
 const PC_WORD = 32;
@@ -30,6 +35,10 @@ const NEXT_PC_WORD = 33;
 const HI_WORD = 34;
 const LO_WORD = 35;
 const CYCLES_WORD = 36;
+const LOAD_SLOT_WORD = OFF_LOAD_SLOT >> 2;
+const LOAD_REG_WORD = OFF_LOAD_REG >> 2;
+const LOAD_VALUE_WORD = OFF_LOAD_VALUE >> 2;
+const BRANCH_DELAY_WORD = OFF_BRANCH_DELAY >> 2;
 
 /** Physical address: folds KSEG0/KSEG1 mirrors onto one canonical key. */
 function phys(pc: number): number {
@@ -38,6 +47,7 @@ function phys(pc: number): number {
 
 export class Dynarec {
   private readonly blocks = new Map<number, WebAssembly.Instance>();
+  private readonly lengths = new WeakMap<WebAssembly.Instance, number>();
   readonly memory = new WebAssembly.Memory({ initial: 1 });
   private readonly image = new Int32Array(this.memory.buffer, 0, STATE_WORDS);
   /** Debug/verification counters: compile count (invalidation forces growth). */
@@ -48,8 +58,10 @@ export class Dynarec {
     const key = phys(pc);
     let inst = this.blocks.get(key);
     if (!inst) {
-      inst = compileBlock(fetch, pc, { ...hooks, memory: this.memory });
+      const info: TranslationInfo = { instructions: 0 };
+      inst = compileBlock(fetch, pc, { ...hooks, memory: this.memory }, info);
       this.blocks.set(key, inst);
+      this.lengths.set(inst, info.instructions);
       this.compiles++;
     }
     return inst;
@@ -74,12 +86,24 @@ export class Dynarec {
 
   /** Copy host CPU state into the image the emitted code operates on. */
   loadState(cpu: CpuState): void {
+    // Plain CpuState callers keep their pending slot in the image between
+    // blocks; Cpu callers provide it explicitly. Publish it before the first
+    // translated instruction, matching the top of interpreter step().
+    const slot = cpu.loadDelay?.slot ?? this.image[LOAD_SLOT_WORD]!;
+    const reg = cpu.loadDelay?.reg ?? this.image[LOAD_REG_WORD]!;
+    const value = cpu.loadDelay?.value ?? this.image[LOAD_VALUE_WORD]!;
     this.image.set(cpu.r, 0);
+    if (slot && reg !== 0) this.image[reg] = value;
     this.image[PC_WORD] = cpu.pc;
     this.image[NEXT_PC_WORD] = cpu.nextPc;
     this.image[HI_WORD] = cpu.hi;
     this.image[LO_WORD] = cpu.lo;
     this.image[CYCLES_WORD] = cpu.cycles;
+    this.image[LOAD_SLOT_WORD] = 0;
+    this.image[LOAD_REG_WORD] = reg;
+    this.image[LOAD_VALUE_WORD] = value;
+    this.image[BRANCH_DELAY_WORD] = cpu.inBranchDelay === undefined
+      ? this.image[BRANCH_DELAY_WORD]! : cpu.inBranchDelay ? 1 : 0;
   }
 
   /** Copy the image back after runBlock mutated it. */
@@ -90,13 +114,25 @@ export class Dynarec {
     cpu.hi = this.image[HI_WORD]!;
     cpu.lo = this.image[LO_WORD]!;
     cpu.cycles = this.image[CYCLES_WORD]!;
+    if (cpu.loadDelay) {
+      cpu.loadDelay.slot = this.image[LOAD_SLOT_WORD]!;
+      cpu.loadDelay.reg = this.image[LOAD_REG_WORD]!;
+      cpu.loadDelay.value = this.image[LOAD_VALUE_WORD]!;
+    }
+    if (cpu.inBranchDelay !== undefined) cpu.inBranchDelay = this.image[BRANCH_DELAY_WORD] !== 0;
   }
 
-  /** One cached-block execution: sync in, run, sync out. */
-  run(pc: number, fetch: (a: number) => number, hooks: DynarecHooks, cpu: CpuState): void {
+  /** Execute one block, or return 0 if it exceeds the instruction budget. */
+  run(
+    pc: number, fetch: (a: number) => number, hooks: DynarecHooks, cpu: CpuState,
+    maxInstructions = Number.POSITIVE_INFINITY,
+  ): number {
     const inst = this.get(pc, fetch, hooks);
+    const count = this.lengths.get(inst)!;
+    if (count > maxInstructions) return 0;
     this.loadState(cpu);
     runBlock(inst, this.image);
     this.runState(cpu);
+    return count;
   }
 }

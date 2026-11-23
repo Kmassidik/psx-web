@@ -1,6 +1,6 @@
 /** Native renderer presentation preferences; unsupported GPU features are explicit. */
 import { useState } from "react";
-import { DEFAULT_CONFIG, type DisplayScale } from "../../state/config";
+import { DEFAULT_CONFIG, type DisplayScale, type Renderer } from "../../state/config";
 import { useApp, setConfig } from "../store";
 import { Dialog, buttonClass, entryClass, frameClass, frameTitleClass, labelClass, selectClass } from "./Dialog";
 
@@ -17,12 +17,13 @@ export function VideoConfigDialog({ onClose, fullscreen, onToggleFullscreen }: V
   const [scale, setScale] = useState<DisplayScale>(live.DisplayScale);
   const [showFps, setShowFps] = useState(live.ShowFPS);
   const [bilinear, setBilinear] = useState(live.BilinearFilter);
+  const [renderer, setRenderer] = useState<Renderer>(live.Renderer);
 
   return (
     <Dialog
       title="Config GPUCore"
       onClose={onClose}
-      onOk={() => setConfig({ DisplayScale: scale, ShowFPS: showFps, BilinearFilter: bilinear })}
+      onOk={() => setConfig({ DisplayScale: scale, ShowFPS: showFps, BilinearFilter: bilinear, Renderer: renderer })}
     >
       <div className="dialog-stack">
         <fieldset className={frameClass}>
@@ -60,8 +61,10 @@ export function VideoConfigDialog({ onClose, fullscreen, onToggleFullscreen }: V
             </div>
             <div className="gpu-control-row">
               <label className={`${labelClass} field-label`} htmlFor="internal-resolution">Internal Resolution</label>
-              <select id="internal-resolution" className={selectClass} value="native" disabled title="Only the native PS1 renderer is available; presentation scaling does not add detail.">
+              <select id="internal-resolution" className={selectClass} value={renderer} onChange={(event) => setRenderer(event.target.value as Renderer)}>
                 <option value="native">1: Native Resolution</option>
+                <option value="2x">2: 2× Geometric Resolution</option>
+                <option value="4x">3: 4× Geometric Resolution</option>
               </select>
             </div>
             <div className="gpu-control-row">
