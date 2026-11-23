@@ -315,6 +315,7 @@ export class Machine {
   }
 
   private vblankAcc = 0;
+  private spuDmaDone = false; // retained in the versioned save-state layout
   private audioSink: SpuAudioSink | null = null;
   private audioLeft = new Float32Array(0);
   private audioRight = new Float32Array(0);
