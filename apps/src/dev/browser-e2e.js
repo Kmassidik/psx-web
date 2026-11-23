@@ -64,11 +64,37 @@ await page.keyboard.press("Home");
 await page.keyboard.press("ArrowRight");
 const volume = await page.$eval("#audio-volume", (element) => element.value);
 assert(Number(volume) > 0 && Number(volume) <= 0.02, `Volume slider changed: ${volume}`);
+await clickButton("Close");
+console.log("E2E stage: audio controls passed");
+
+await page.keyboard.press("F1");
+console.log("E2E stage: F1 pressed");
+await page.waitForFunction(() => document.body.innerText.includes("saved state 1"));
+await clickButton("Run");
+await clickButton("Reset");
+await page.waitForFunction(() => document.body.innerText.includes("running psx-hello.exe"));
+await page.keyboard.press("F3");
+await page.waitForFunction(() => document.body.innerText.includes("loaded state 1"));
+console.log("E2E stage: save/load state passed");
+
+await clickButton("Config");
+await clickButton("Memory card");
+await page.waitForFunction(() => document.body.innerText.includes("Select Memcards files"));
+await clickButton("Format");
+await page.waitForFunction(() => document.body.innerText.includes("Slot 1 formatted and saved locally"));
+const downloadWait = tab.waitForDownload();
+await clickButton("Export");
+const cardDownload = await downloadWait;
+assert(cardDownload.suggestedFilename === "slot1.mcr", "Memory-card export uses the configured filename");
+await clickButton("Eject");
+await page.waitForFunction(() => document.body.innerText.includes("Slot 1 ejected; stored data was kept"));
 
 console.log(JSON.stringify({
   greenFrame: true,
   pauseContinueReset: true,
   fullscreen: true,
   audioUnlockMuteVolume: true,
+  saveLoadState: true,
+  memoryCardFormatExportEject: true,
   status: await bodyText(),
 }, null, 2));

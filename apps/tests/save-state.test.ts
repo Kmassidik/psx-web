@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { Machine } from "../src/core/machine";
 import type { SpuAudioSink } from "../src/core/spu-audio";
+import { SAVE_STATE_VERSION } from "../src/core/state-codec";
 
 function kernelCall(
   m: Machine, table: number, fn: number,
@@ -154,11 +155,27 @@ describe("complete versioned machine save states", () => {
     expect(reloaded.machine.saveState()).toEqual(continued);
   });
 
+  test("memory-card images, attachment state, and protocol flags round-trip", () => {
+    const m = new Machine();
+    const image = new Uint8Array(128 * 1024);
+    for (let i = 0; i < image.length; i++) image[i] = (i * 29) & 0xff;
+    m.joypad.attachMemoryCard(0, image);
+    m.joypad.write(0x1f80_104a, 3);
+    m.joypad.write(0x1f80_1040, 0x81);
+    const saved = m.saveState();
+    m.joypad.importMemoryCard(0, new Uint8Array(image.length));
+    m.joypad.attachMemoryCard(1);
+    m.joypad.detachMemoryCard(0);
+    m.loadState(saved);
+    expect(m.joypad.exportMemoryCard(0)).toEqual(image);
+    expect(m.joypad.exportMemoryCard(1)).toBeUndefined();
+  });
+
   test("malformed, truncated, corrupt, and future-version inputs are atomic rejections", () => {
     const f = fixture();
     const before = f.machine.saveState();
     const future = before.slice();
-    new DataView(future.buffer).setUint32(4, 2, true);
+    new DataView(future.buffer).setUint32(4, SAVE_STATE_VERSION + 1, true);
     const corrupt = before.slice();
     corrupt[corrupt.length - 1] ^= 0x80;
     const trailing = new Uint8Array(before.length + 1);

@@ -60,6 +60,12 @@ const mdec = O({
   dmaIn: B, dmaOut: B, currentBlock: N,
 });
 const joypad = O({
+  cards: A(O({
+    present: B, image: T("u8", 128 * 1024), flag: N, command: N, step: N,
+    started: B, active: B, sector: N, previous: N, checksum: N, receivedChecksum: N,
+    writeData: T("u8", 128), lastAck: B,
+  }), 2, 2),
+  cardTransaction: B,
   rx: A(N, 8), mode: N, ctrl: N, baud: N, ack: B, irq: B,
   connected: A(B, 2, 2), analog: A(B, 2, 2), analogLocked: A(B, 2, 2), config: A(B, 2, 2),
   axes: T("u8", 8), rumbleMap: T("u8", 12), oldRumble: A(B, 2, 2),

@@ -32,7 +32,13 @@ interface MdecState {
   inWords: number[]; rl: number[]; rlPos: number; out: number[]; outPos: number;
   dmaIn: boolean; dmaOut: boolean; currentBlock: number;
 }
+interface SerializedCard {
+  present: boolean; image: Uint8Array; flag: number; command: number; step: number;
+  started: boolean; active: boolean; sector: number; previous: number; checksum: number;
+  receivedChecksum: number; writeData: Uint8Array; lastAck: boolean;
+}
 interface JoypadState {
+  cards: SerializedCard[]; cardTransaction: boolean;
   rx: number[]; mode: number; ctrl: number; baud: number; ack: boolean; irq: boolean;
   connected: boolean[]; analog: boolean[]; analogLocked: boolean[]; config: boolean[];
   axes: Uint8Array; rumbleMap: Uint8Array; oldRumble: boolean[]; smallMotor: boolean[];
@@ -78,7 +84,15 @@ const gpuInternal = (m: Machine): GpuInternal => m.gpu as unknown as GpuInternal
 const cdromInternal = (m: Machine): CdromInternal => m.cdrom as unknown as CdromInternal;
 const spuInternal = (m: Machine): SpuInternal => m.spu as unknown as SpuInternal;
 const mdecInternal = (m: Machine): MdecInternal => m.mdec as unknown as MdecInternal;
-const joypadInternal = (m: Machine): JoypadState => m.joypad as unknown as JoypadState;
+interface JoypadInternal extends Omit<JoypadState, "cards"> {
+  cards: Array<Omit<SerializedCard, "present"> | undefined>;
+}
+const joypadInternal = (m: Machine): JoypadInternal => m.joypad as unknown as JoypadInternal;
+const emptyCard = (): SerializedCard => ({
+  present: false, image: new Uint8Array(128 * 1024), flag: 0, command: 0, step: 0,
+  started: false, active: false, sector: 0, previous: 0, checksum: 0,
+  receivedChecksum: 0, writeData: new Uint8Array(128), lastAck: false,
+});
 const coreInternal = (m: Machine): CoreInternal => m as unknown as CoreInternal;
 
 /** Copy every execution-affecting field; host callbacks/providers are excluded. */
@@ -146,6 +160,8 @@ export function captureMachineState(m: Machine): MachineState {
       currentBlock: md.currentBlock,
     },
     joypad: {
+      cards: joy.cards.map((card) => card ? { ...card, present: true, image: card.image.slice(), writeData: card.writeData.slice() } : emptyCard()),
+      cardTransaction: joy.cardTransaction,
       rx: joy.rx.slice(), mode: joy.mode, ctrl: joy.ctrl, baud: joy.baud, ack: joy.ack, irq: joy.irq,
       connected: joy.connected.slice(), analog: joy.analog.slice(), analogLocked: joy.analogLocked.slice(),
       config: joy.config.slice(), axes: joy.axes.slice(), rumbleMap: joy.rumbleMap.slice(),
@@ -223,6 +239,17 @@ export function restoreMachineState(m: Machine, s: MachineState): void {
   md.outPos = ms.outPos; md.dmaIn = ms.dmaIn; md.dmaOut = ms.dmaOut; md.currentBlock = ms.currentBlock;
 
   const joy = joypadInternal(m), js = s.joypad;
+  for (let port = 0; port < 2; port++) {
+    const saved = js.cards[port]!;
+    if (!saved.present) { joy.cards[port] = undefined; continue; }
+    const card = m.joypad.attachMemoryCard(port as 0 | 1, saved.image);
+    Object.assign(card, {
+      flag: saved.flag, command: saved.command, step: saved.step, started: saved.started,
+      active: saved.active, sector: saved.sector, previous: saved.previous, checksum: saved.checksum,
+      receivedChecksum: saved.receivedChecksum, writeData: saved.writeData.slice(), lastAck: saved.lastAck,
+    });
+  }
+  joy.cardTransaction = js.cardTransaction;
   joy.rx = js.rx.slice(); joy.mode = js.mode; joy.ctrl = js.ctrl; joy.baud = js.baud;
   joy.ack = js.ack; joy.irq = js.irq; joy.connected = js.connected.slice(); joy.analog = js.analog.slice();
   joy.analogLocked = js.analogLocked.slice(); joy.config = js.config.slice(); joy.axes.set(js.axes);

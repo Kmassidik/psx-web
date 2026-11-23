@@ -75,6 +75,8 @@ export function MainWindow() {
     let image: ImageData | null = null;
     let frames = 0;
     let lastFps = performance.now();
+    let lastCycleTime = lastFps;
+    let cycleBudget = 0;
 
     const present = () => {
       if (machineRef.current !== machine || !nativeContext || !context) return;
@@ -95,8 +97,14 @@ export function MainWindow() {
     const tick = () => {
       if (machineRef.current !== machine || getState().run !== "running") return;
       gamepadInput.poll(machine, configRef.current);
-      // NTSC console-rate budget: 33.8688 MHz / 60 ≈ 560k cycles per presented frame.
-      for (let slice = 0; slice < 28; slice++) machine.runSlice(20_000);
+      const cycleNow = performance.now();
+      const elapsed = Math.min(100, Math.max(0, cycleNow - lastCycleTime));
+      lastCycleTime = cycleNow;
+      cycleBudget = Math.min(cycleBudget + elapsed * 33_868.8, 3_386_880);
+      while (cycleBudget >= 20_000) {
+        machine.runSlice(20_000);
+        cycleBudget -= 20_000;
+      }
       present();
       frames++;
       const now = performance.now();
