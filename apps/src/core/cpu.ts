@@ -9,7 +9,7 @@
  * SWL/SW/SWR, LL/SC (uniprocessor: always succeed), SPECIAL2 MUL.
  * LWC2/SWC2 route to the GTE.
  */
-import { Memory } from "./memory";
+import { Memory, translate } from "./memory";
 import { Rcnt } from "./rcnt";
 
 export const EXC_LOAD = 0x4, EXC_STORE = 0x5, EXC_SYS = 0x8, EXC_BP = 0x9, EXC_OV = 0xc;
@@ -63,6 +63,12 @@ export class Cpu {
       this.loadDelay.slot = 0;
     }
 
+    const pc = this.pc >>> 0;
+    const vector = pc & 0x1fff_ffff;
+    const isVector = vector === 0xa0 || vector === 0xb0 || vector === 0xc0;
+    const isHleRam = pc >= 0x8000_0100 && pc < 0x8000_3000;
+    if (pc >= 0x8080_0000 && pc < 0xa000_0000 && !isVector && !isHleRam) return false;
+    if ((translate(this.pc).region as number) < 0) return false; // unmapped instruction address
     const instr = this.mem.load32(this.pc) | 0;
     const curPc = this.pc; // link/branch base BEFORE advancing
     this.pc = this.nextPc;
