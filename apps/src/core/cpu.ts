@@ -263,7 +263,7 @@ export class Cpu {
           case 0x10: // RFE — restore exception SR: bits 3:2 → 1:0, clear 5:2
             if (fn === 0x10) {
               const sr = this.cp0[12]!;
-              this.cp0[12] = ((sr & ~0x3f) | ((sr >>> 2) & 0x3)) >>> 0;
+              this.cp0[12] = ((sr & ~0x3f) | ((sr >>> 2) & 0x0f)) >>> 0;
             }
             break;
           default: this.exception(10, 0); return true; // reserved instruction: enter exception and resume after it
@@ -480,7 +480,7 @@ export class Cpu {
   exception(code: number, _info: number): void {
     const sr = this.cp0[12]!;
     this.cp0[13] = ((code << 2) | (_info & 0xff00) | (this.inBranchDelay ? (1 << 31) : 0)) >>> 0; // CAUSE
-    this.cp0[12] = ((sr & ~0xf) | ((sr << 2) & 0x3f)) >>> 0;
+    this.cp0[12] = ((sr & ~0x3f) | ((sr << 2) & 0x3f)) >>> 0;
     // If a handler exists at the vector, deliver the exception; otherwise
     // emulate the BIOS default outcome: return past the faulting instruction.
     const epc = (this.pc - (this.inBranchDelay ? 4 : 0) + (code === 10 ? 4 : 0)) >>> 0;

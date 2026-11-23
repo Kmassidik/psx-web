@@ -39,6 +39,19 @@ function prng(seed: number): () => number {
   };
 }
 
+describe("CP0 exception status stack", () => {
+  test("entry and RFE preserve all four stacked status bits", () => {
+    const cpu = boot({ addr: 0, words: [0x4200_0010] });
+    cpu.cp0[12] = 0x105;
+    cpu.exception(4, 0);
+    expect(cpu.cp0[12]! & 0x3f).toBe(0x14);
+    cpu.reset(0);
+    cpu.cp0[12] = 0x114;
+    cpu.step();
+    expect(cpu.cp0[12]! & 0x3f).toBe(5);
+  });
+});
+
 describe("SPECIAL arithmetic vs independent model", () => {
   test("ADDU/SUBU/AND/OR/XOR exhaustive over adversarial values", () => {
     const adversarial = [0, 1, -1, 0x7fffffff, -0x80000000, 0x12345678 | 0, -0x12345678, 0xffff0000 | 0, 0x0000ffff];
