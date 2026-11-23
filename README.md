@@ -14,13 +14,20 @@ Bun toolchain, React UI, zero server-side emulation — the browser is the engin
 | CDROM controller (command/INT chain) | done | 23 tests |
 | DMA (7 channels, linked-list, OTC) | done | 20 tests |
 | SPU (24 voices, ADPCM, gauss, ADSR) | done | 27 tests |
-| MDEC (macroblock decoder) | in progress | 34/41 |
+| MDEC (macroblock decoder + DMA) | done | golden vectors + full DMA decode |
 | Disc loaders (CUE/BIN, ISO, CHD v4/v5, PBP) | done | 34 tests |
 | Dynarec (WASM tier) | in progress | parity suite |
-| UI (React, ePSXe-blueprint dialogs) | done | compile gate |
+| UI (React, ePSXe-blueprint dialogs) | done | browser E2E + config tests |
 
-Boot proof: a hand-assembled PS-X EXE uploaded in the browser runs the full
-pipeline (loader → CPU → bus → GPU → canvas) — `rgb(0,255,0)` verified on-screen.
+Boot proof: a hand-assembled PS-X EXE runs the full loader → CPU → bus → GPU →
+canvas pipeline, with `rgb(0,255,0)` verified in browser E2E. 3Xtreme reaches
+its front-end/game executables and renders a red loading bar, but has **not**
+reached a title screen or gameplay and is not yet described as playable.
+
+Current verification: 356 unit/integration tests, strict TypeScript, and a
+repeatable browser E2E scenario covering rendering, run controls, fullscreen,
+audio unlock/mute/volume, and persisted settings. See `TODO.md` for remaining
+commercial-game, persistence, performance, and compatibility work.
 
 ## Layout
 
@@ -58,6 +65,24 @@ docker run --rm -p 5173:5173 psx-web
 
 Open http://localhost:5173 and choose a PS-X EXE. The server binds to all
 interfaces inside the container; emulation still runs entirely in the browser.
+
+### Browser E2E
+
+Generate a deterministic PS-X EXE with `buildHelloExe()`, then run
+`apps/src/dev/browser-e2e.js` in the Puppeteer browser harness against the
+running app. `PSX_E2E_URL` selects the URL and `PSX_E2E_EXE` selects the local
+executable. The scenario asserts real green pixels, pause/continue/reset,
+fullscreen entry/exit, and audio unlock/mute/volume controls.
+
+For local commercial-boot diagnostics (assets never committed):
+
+```sh
+cd apps
+bun run src/dev/commercial-boot.ts /path/to/game.mdf 40000 --fast
+```
+
+Add `--json=baseline.json` to retain checkpoints, `--compare=baseline.json` on a
+later run, or `--trace` for a bounded recent-PC history.
 
 ## Legal
 

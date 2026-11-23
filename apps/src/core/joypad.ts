@@ -1,3 +1,5 @@
+import { MemoryCard, type MemoryCardImage } from "./memory-card";
+
 /** SIO0 serial bus and standard digital/analog controller peripherals. */
 const JOY_DATA = 0x1f80_1040;
 const JOY_STAT = 0x1f80_1044;
@@ -36,6 +38,7 @@ export class Joypad {
   private irq = false;
 
   private readonly connected = [true, true];
+  private readonly cards: Array<MemoryCard | undefined> = [undefined, undefined];
   private readonly analog = [false, false];
   private readonly analogLocked = [false, false];
   private readonly config = [false, false];
@@ -51,6 +54,7 @@ export class Joypad {
   private packetPort: JoypadPort = 0;
   private command = 0;
   private addressed = false;
+  private cardTransaction = false;
 
   constructor(private readonly pads: { pad1: number; pad2: number }) {}
 
@@ -94,6 +98,43 @@ export class Joypad {
     this.resetPeripheral(port);
     this.setMotors(port, false, 0);
     if (!connected && this.packetPort === port) this.resetTransaction();
+  }
+
+  /** Insert a raw card image, or a newly formatted card when omitted. */
+  attachMemoryCard(port: JoypadPort, image?: MemoryCardImage): MemoryCard {
+    const card = new MemoryCard(image);
+    this.cards[port] = card;
+    if (this.cardTransaction && this.packetPort === port) this.resetTransaction();
+    return card;
+  }
+
+  /** Remove a card without affecting the controller attached to the same port. */
+  detachMemoryCard(port: JoypadPort): void {
+    this.cards[port] = undefined;
+    if (this.cardTransaction && this.packetPort === port) this.resetTransaction();
+  }
+
+  /** Import into an inserted card, or insert a card when the slot is empty. */
+  importMemoryCard(port: JoypadPort, image: MemoryCardImage): MemoryCard {
+    const card = this.cards[port];
+    if (!card) return this.attachMemoryCard(port, image);
+    card.import(image);
+    if (this.cardTransaction && this.packetPort === port) this.resetTransaction();
+    return card;
+  }
+
+  /** Return a defensive raw-image copy, or undefined for an empty slot. */
+  exportMemoryCard(port: JoypadPort): Uint8Array | undefined {
+    return this.cards[port]?.export();
+  }
+
+  /** Format an inserted card; returns false when the slot is empty. */
+  formatMemoryCard(port: JoypadPort): boolean {
+    const card = this.cards[port];
+    if (!card) return false;
+    card.format();
+    if (this.cardTransaction && this.packetPort === port) this.resetTransaction();
+    return true;
   }
 
   /** Set normalized axes in wire order: right X/Y, then left X/Y (-1..1). */
@@ -145,20 +186,30 @@ export class Joypad {
       this.sent = [value];
       this.response = [0xff];
       this.command = 0;
-      this.addressed = value === 0x01 && this.connected[port] === true;
+      this.cardTransaction = value === 0x81;
+      this.addressed = this.cardTransaction ? this.cards[port] !== undefined :
+        value === 0x01 && this.connected[port] === true;
       this.packetIndex = 1;
       this.receive(0xff);
       if (this.addressed) this.acknowledge();
       return;
     }
 
-    if (port !== this.packetPort || !this.addressed || !this.connected[port]) {
+    const disconnected = this.cardTransaction ? this.cards[port] === undefined : !this.connected[port];
+    if (port !== this.packetPort || !this.addressed || disconnected) {
       this.receive(0xff);
       return;
     }
 
     const index = this.packetIndex;
     this.sent.push(value);
+    if (this.cardTransaction) {
+      const card = this.cards[port]!;
+      this.receive(card.transfer(value));
+      this.packetIndex++;
+      if (card.ack) this.acknowledge();
+      return;
+    }
     if (index === 1) {
       this.command = value;
       this.buildResponse(port, value);
@@ -286,11 +337,13 @@ export class Joypad {
 
   private resetTransaction(): void {
     this.ack = false;
+    this.cards[this.packetPort]?.reset();
     this.response = [];
     this.sent = [];
     this.packetIndex = 0;
     this.command = 0;
     this.addressed = false;
+    this.cardTransaction = false;
   }
 
   private acknowledge(): void {

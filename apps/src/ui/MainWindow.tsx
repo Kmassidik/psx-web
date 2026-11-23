@@ -6,7 +6,10 @@ import { readIsoFile } from "../core/loader/iso9660";
 import { Machine } from "../core/machine";
 import { SpuAudioSink } from "../core/spu-audio";
 import { bindAudioUnlock } from "./audio";
-import { PAD_BUTTONS, type PadButton, type PsxConfig } from "../state/config";
+import { loadStoredSaveState, storeSaveState } from "./save-state-storage";
+import { GamepadInput } from "./gamepad-input";
+import { attachStoredMemoryCards } from "./memory-card-storage";
+import { PAD_BUTTONS, type PsxConfig } from "../state/config";
 import { getState, setConfig, setState, useApp } from "./store";
 import { DisplaySurface } from "./DisplaySurface";
 import { MainMenu, type DialogName, type FileMode } from "./MainMenu";
@@ -15,21 +18,10 @@ import { GamepadConfigDialog } from "./dialogs/GamepadConfigDialog";
 import { MemcardDialog } from "./dialogs/MemcardDialog";
 import { Dialog } from "./dialogs/Dialog";
 
-const PAD_BITS: Record<PadButton, number> = {
-  Select: 0x0001, L3: 0x0002, R3: 0x0004, Start: 0x0008,
-  Up: 0x0010, Right: 0x0020, Down: 0x0040, Left: 0x0080,
-  L2: 0x0100, R2: 0x0200, L1: 0x0400, R1: 0x0800,
-  Triangle: 0x1000, Circle: 0x2000, Cross: 0x4000, Square: 0x8000,
-};
-
 interface BootSource {
   buffer: ArrayBuffer;
   name: string;
   mode: FileMode;
-}
-
-function releasePads(machine: Machine | null): void {
-  if (machine) machine.pads.pad1 = machine.pads.pad2 = 0xffff;
 }
 
 export function MainWindow() {
@@ -46,7 +38,11 @@ export function MainWindow() {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const fileInput = useRef<HTMLInputElement>(null);
   const fileMode = useRef<FileMode>("auto");
+  const stateSlotRef = useRef(1);
   const machineRef = useRef<Machine | null>(null);
+  const gamepadInputRef = useRef<GamepadInput | null>(null);
+  if (!gamepadInputRef.current) gamepadInputRef.current = new GamepadInput();
+  const gamepadInput = gamepadInputRef.current;
   const bootSourceRef = useRef<BootSource | null>(null);
   const configRef = useRef<PsxConfig>(config);
   const rafRef = useRef(0);
@@ -56,6 +52,10 @@ export function MainWindow() {
   const [muted, setMuted] = useState(false);
   const redrawRef = useRef<() => void>(() => {});
   configRef.current = config;
+
+  const releasePads = useCallback(() => {
+    gamepadInput.release(machineRef.current);
+  }, [gamepadInput]);
 
   const cancelLoop = useCallback(() => {
     cancelAnimationFrame(rafRef.current);
@@ -94,6 +94,7 @@ export function MainWindow() {
 
     const tick = () => {
       if (machineRef.current !== machine || getState().run !== "running") return;
+      gamepadInput.poll(machine, configRef.current);
       // NTSC console-rate budget: 33.8688 MHz / 60 ≈ 560k cycles per presented frame.
       for (let slice = 0; slice < 28; slice++) machine.runSlice(20_000);
       present();
@@ -109,12 +110,12 @@ export function MainWindow() {
     };
     present();
     rafRef.current = requestAnimationFrame(tick);
-  }, [cancelLoop]);
+  }, [cancelLoop, gamepadInput]);
 
   const boot = useCallback((buf: ArrayBuffer, name: string, mode: FileMode) => {
     let bootStage = "PS-X EXE";
     cancelLoop();
-    releasePads(machineRef.current);
+    releasePads();
     audio.reset();
     void audio.resume();
     try {
@@ -122,6 +123,8 @@ export function MainWindow() {
       // BIOS dump (512 KiB) vs PS-EXE: size discriminator (load_bios spec).
       if (bytes.byteLength === 512 * 1024 && (mode === "bios" || name.toLowerCase().includes("bios"))) {
         const m = new Machine();
+        attachStoredMemoryCards(m, [configRef.current.Memcard1, configRef.current.Memcard2]);
+        gamepadInput.attach(m);
         m.setAudioSink(audio);
         m.loadBios(bytes);
         machineRef.current = m;
@@ -134,6 +137,8 @@ export function MainWindow() {
       let exeBytes = bytes;
       bootStage = "PS-X EXE";
       const m = new Machine();
+      attachStoredMemoryCards(m, [configRef.current.Memcard1, configRef.current.Memcard2]);
+      gamepadInput.attach(m);
       m.setAudioSink(audio);
       if (name.toLowerCase().endsWith(".mdf")) {
         const provider = createMdfSectorProvider(bytes);
@@ -168,15 +173,15 @@ export function MainWindow() {
       setLoaded(null);
       setState({ run: "error", lastError: `${bootStage}: ${String(e)}`, statusLine: "load failed" });
     }
-  }, [cancelLoop, startLoop]);
+  }, [cancelLoop, gamepadInput, releasePads, startLoop]);
 
   const pause = useCallback(() => {
     if (getState().run !== "running" || !loaded) return;
     cancelLoop();
-    releasePads(machineRef.current);
+    releasePads();
     audio.pause();
     setState({ run: "paused", statusLine: `paused ${loaded}` });
-  }, [cancelLoop, loaded]);
+  }, [cancelLoop, loaded, releasePads]);
 
   const resume = useCallback(() => {
     if (getState().run !== "paused" || !loaded || !machineRef.current) return;
@@ -192,7 +197,7 @@ export function MainWindow() {
 
   const stop = useCallback(() => {
     cancelLoop();
-    releasePads(machineRef.current);
+    releasePads();
     audio.pause();
     machineRef.current = null;
     bootSourceRef.current = null;
@@ -201,7 +206,37 @@ export function MainWindow() {
     canvas?.getContext("2d")?.clearRect(0, 0, canvas.width, canvas.height);
     setLoaded(null);
     setState({ run: "idle", lastError: "", statusLine: "ready" });
-  }, [cancelLoop]);
+  }, [cancelLoop, releasePads]);
+
+  const saveState = useCallback(async (slot: number) => {
+    const machine = machineRef.current;
+    if (!machine || !loaded) return;
+    stateSlotRef.current = slot;
+    try {
+      const bytes = machine.saveState();
+      await storeSaveState(loaded, slot, bytes);
+      setState({ lastError: "", statusLine: `saved state ${slot} · ${loaded}` });
+    } catch (error) {
+      setState({ lastError: `Save state ${slot} failed: ${String(error)}` });
+    }
+  }, [loaded]);
+
+  const loadState = useCallback(async (slot: number) => {
+    const machine = machineRef.current;
+    if (!machine || !loaded) return;
+    stateSlotRef.current = slot;
+    cancelLoop();
+    try {
+      const bytes = await loadStoredSaveState(loaded, slot);
+      if (!bytes) throw new Error("No compatible state exists in this slot");
+      machine.loadState(bytes);
+      audio.reset();
+      setState({ run: "running", lastError: "", statusLine: `loaded state ${slot} · ${loaded}` });
+      startLoop(loaded);
+    } catch (error) {
+      setState({ run: "paused", lastError: `Load state ${slot} failed: ${String(error)}` });
+    }
+  }, [audio, cancelLoop, loaded, startLoop]);
 
   const toggleFullscreen = useCallback(async () => {
     try {
@@ -226,11 +261,17 @@ export function MainWindow() {
       if (event.key === "F11" && !event.ctrlKey && !event.metaKey && !event.altKey) {
         event.preventDefault();
         void toggleFullscreen();
+      } else if (event.key === "F1") {
+        event.preventDefault();
+        void saveState(stateSlotRef.current);
+      } else if (event.key === "F3") {
+        event.preventDefault();
+        void loadState(stateSlotRef.current);
       }
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [toggleFullscreen]);
+  }, [toggleFullscreen, saveState, loadState]);
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
@@ -244,31 +285,33 @@ export function MainWindow() {
         const button = PAD_BUTTONS.find((name) => bindings[name] !== "" && bindings[name] === event.code);
         if (!button || !enabled) continue;
         event.preventDefault();
-        if (machineRef.current) {
-          if (port === 1) machineRef.current.pads.pad1 &= ~PAD_BITS[button];
-          else machineRef.current.pads.pad2 &= ~PAD_BITS[button];
-        }
+        gamepadInput.setKeyboardButton(port, button, true);
       }
     };
     const onKeyUp = (event: KeyboardEvent) => {
       for (const [port, bindings] of [[1, config.Pad1Bindings], [2, config.Pad2Bindings]] as const) {
         const button = PAD_BUTTONS.find((name) => bindings[name] !== "" && bindings[name] === event.code);
-        if (!button || !machineRef.current) continue;
-        if (port === 1) machineRef.current.pads.pad1 |= PAD_BITS[button];
-        else machineRef.current.pads.pad2 |= PAD_BITS[button];
+        if (!button) continue;
+        gamepadInput.setKeyboardButton(port, button, false);
       }
     };
-    const onBlur = () => releasePads(machineRef.current);
+    const onBlur = () => {
+      gamepadInput.setSuspended(true);
+      releasePads();
+    };
+    const onFocus = () => gamepadInput.setSuspended(false);
     window.addEventListener("keydown", onKeyDown);
     window.addEventListener("keyup", onKeyUp);
     window.addEventListener("blur", onBlur);
+    window.addEventListener("focus", onFocus);
     return () => {
       window.removeEventListener("keydown", onKeyDown);
       window.removeEventListener("keyup", onKeyUp);
       window.removeEventListener("blur", onBlur);
-      releasePads(machineRef.current);
+      window.removeEventListener("focus", onFocus);
+      releasePads();
     };
-  }, [config.Pad1Bindings, config.Pad2Bindings, config.PadType1, config.PadType2, dialog]);
+  }, [config.Pad1Bindings, config.Pad2Bindings, config.PadType1, config.PadType2, dialog, gamepadInput, releasePads]);
 
   useEffect(() => {
     const unbind = bindAudioUnlock(audio, window);
@@ -331,6 +374,8 @@ export function MainWindow() {
         onResume={resume}
         onReset={reset}
         onStop={stop}
+        onSaveState={(slot) => void saveState(slot)}
+        onLoadState={(slot) => void loadState(slot)}
         onToggleFullscreen={() => void toggleFullscreen()}
       />
       <DisplaySurface
@@ -394,7 +439,7 @@ export function MainWindow() {
         </Dialog>
       )}
       {dialog === "gamepad" && <GamepadConfigDialog initialPort={gamepadPort} onClose={() => setDialog(null)} />}
-      {dialog === "memcard" && <MemcardDialog onClose={() => setDialog(null)} />}
+      {dialog === "memcard" && <MemcardDialog machine={machineRef.current} onClose={() => setDialog(null)} />}
       {dialog === "about" && (
         <Dialog title="About ePSXe Web" onClose={() => setDialog(null)} showCancel={false} okLabel="Close">
           <div className="about-content">

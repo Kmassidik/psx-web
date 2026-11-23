@@ -27,6 +27,9 @@ import { Mdec } from "./mdec";
 import type { SectorProvider } from "./loader/iso9660";
 import { Joypad } from "./joypad";
 import type { SpuAudioSink } from "./spu-audio";
+import { decodeState, encodeState } from "./state-codec";
+import { MACHINE_STATE_SCHEMA } from "./state-format";
+import { captureMachineState, restoreMachineState, type MachineState } from "./machine-state";
 
 export class Machine {
   readonly mem = new Memory();
@@ -353,7 +356,22 @@ export class Machine {
     this.cpu.reset(0xbfc0_0000); // BIOS entry
   }
 
-  /** Full-state snapshot (zsave_snapshot_* spec): all typed-array state. */
+  /** Serialize the complete deterministic machine state in the versioned RPSX format. */
+  saveState(): Uint8Array {
+    return encodeState(captureMachineState(this), MACHINE_STATE_SCHEMA);
+  }
+
+  /**
+   * Decode and validate the entire input before touching live state. Audio sinks
+   * and sector providers are host attachments and deliberately remain in place.
+   */
+  loadState(bytes: Uint8Array): void {
+    // The schema decoder supplies the runtime validation for this trusted shape.
+    const state = decodeState(bytes, MACHINE_STATE_SCHEMA) as MachineState;
+    restoreMachineState(this, state);
+  }
+
+  /** Legacy lightweight snapshot retained for existing diagnostic callers. */
   snapshot(): MachineSnapshot {
     const g = this.gteCore;
     return {

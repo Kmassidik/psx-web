@@ -78,6 +78,8 @@ interface MainMenuProps {
   onResume: () => void;
   onReset: () => void;
   onStop: () => void;
+  onSaveState: (slot: number) => void;
+  onLoadState: (slot: number) => void;
   onToggleFullscreen: () => void;
 }
 
@@ -189,12 +191,12 @@ export function MainMenu(props: MainMenuProps) {
         <MenuSeparator />
         <MenuItem label="Save State (F1)">
           {stateSlots.map((slot) => (
-            <MenuItem key={slot} label={`Slot ${slot}`} disabled reason="Complete save states require GPU, CDROM, SPU, and scheduler serialization." />
+            <MenuItem key={slot} label={`Slot ${slot}`} disabled={!hasMachine} reason="Load a game before saving state." action={() => props.onSaveState(slot)} />
           ))}
         </MenuItem>
         <MenuItem label="Load State (F3)">
           {stateSlots.map((slot) => (
-            <MenuItem key={slot} label={`Slot ${slot}`} disabled reason="Complete save states require GPU, CDROM, SPU, and scheduler serialization." />
+            <MenuItem key={slot} label={`Slot ${slot}`} disabled={!hasMachine} reason="Load the same game before restoring state." action={() => props.onLoadState(slot)} />
           ))}
         </MenuItem>
       </TopMenu>

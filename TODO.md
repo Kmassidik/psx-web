@@ -8,7 +8,7 @@ Detailed execution plan for turning the current emulator checkpoint into a relia
 - 3Xtreme reaches `FE.EXE` → `GAME.EXE` and draws a red loading bar: 1,560 nonblack pixels.
 - 3Xtreme has **not** reached a title screen or gameplay; do not describe it as playable.
 - The BIOS-free/HLE route is selected. A real BIOS remains optional and user-supplied.
-- Latest full-suite checkpoint: 311 tests passing and TypeScript clean.
+- Latest full-suite checkpoint: 356 tests passing and TypeScript clean; repeatable browser E2E also passes.
 - RCNT MMIO and handler timer waits are fixed; extended runs transfer full CD sectors without the previous invalid control flow.
 - Game images and BIOS files stay local and ignored. Emulation remains client-side.
 - Source files should remain below 600 lines; split modules by responsibility instead of growing monoliths.
@@ -281,7 +281,7 @@ Detailed execution plan for turning the current emulator checkpoint into a relia
 
 **Acceptance:** All MDEC unit tests pass, DMA integration is deterministic, and a representative game FMV/decode path produces valid frames without FIFO deadlock.
 
-### [ ] 5.2 Complete SIO, memory-card, and peripheral behavior
+### [x] 5.2 Complete SIO, memory-card, and peripheral behavior
 
 **Goal:** Support saving and other controller-port devices without stubs that falsely report success.
 
@@ -309,7 +309,7 @@ Detailed execution plan for turning the current emulator checkpoint into a relia
 
 ## Phase 6 — Save states, configuration, and UI completion
 
-### [ ] 6.1 Implement complete, versioned save states
+### [x] 6.1 Implement complete, versioned save states
 
 **Goal:** Save and restore deterministic execution across browser sessions.
 
@@ -321,7 +321,7 @@ Detailed execution plan for turning the current emulator checkpoint into a relia
 
 **Acceptance:** Save/load round-trips produce identical subsequent traces and frames across reloads; every newly added stateful subsystem is included in snapshot tests.
 
-### [ ] 6.2 Complete the ePSXe-style UI actions
+### [x] 6.2 Complete the ePSXe-style UI actions
 
 **Goal:** Make every visible menu item functional or explicitly unavailable.
 
@@ -333,7 +333,7 @@ Detailed execution plan for turning the current emulator checkpoint into a relia
 
 **Acceptance:** Every enabled control performs its labeled action; keyboard and pointer flows work in Docker; dialogs preserve settings and close without stopping unrelated emulator state.
 
-### [ ] 6.3 Validate and persist user configuration safely
+### [x] 6.3 Validate and persist user configuration safely
 
 **Goal:** Keep settings predictable across reloads without persisting copyrighted content.
 

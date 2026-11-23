@@ -108,7 +108,7 @@ export function GamepadConfigDialog({ initialPort, onClose }: GamepadConfigDialo
             }}
           >
             {PAD_TYPES.map((type, i) => <option key={type} value={i}>{type}</option>)}
-            <option value={2} disabled title="Analog and vibration are not connected to the controller core.">[SCPH-1200] DualShock (unsupported)</option>
+            <option value={2}>[SCPH-1200] DualShock</option>
           </select>
         </div>
 
