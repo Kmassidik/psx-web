@@ -234,6 +234,8 @@ export class Machine {
 
   readonly diagnostics = { handlerTruncations: 0, lastHandlerEntry: 0, lastHandlerPc: 0, lastHandlerKind: "", lastHandlerRegisters: [] as number[] };
 
+  private handlerDepth = 0;
+
   private runHandler(entry: number, kind = "event"): void {
     if (entry === 0) return;
     this.kernel.prepareExceptionReturn();
@@ -259,6 +261,8 @@ export class Machine {
       for (let reg = 16; reg <= 23; reg++) this.cpu.r[reg] = this.mem.load32(customExit + 0x0c + (reg - 16) * 4);
       this.cpu.r[28] = this.mem.load32(customExit + 0x2c);
     }
+    this.cpu.r[29] = (0x801f_d000 - this.handlerDepth * 0x4000) | 0;
+    this.handlerDepth++;
     // Keep handlers interpreted: their per-instruction RCNT ticking and GTE /
     // HLE / CP0 behavior must not be coarsened to block-granular timing.
     let steps = 0;
@@ -294,6 +298,7 @@ export class Machine {
       this.diagnostics.lastHandlerPc = this.cpu.pc >>> 0;
       this.diagnostics.lastHandlerRegisters = [...this.cpu.r];
     }
+    this.handlerDepth--;
     this.cpu.r.set(registers);
     this.cpu.cp0.set(cp0);
     this.cpu.pc = pc;
