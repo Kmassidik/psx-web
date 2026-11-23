@@ -65,6 +65,8 @@ export class Dma {
   raiseIrq: (line: number) => void = () => {};
   /** Called once for every completed DMA channel, including repeated transfers. */
   onComplete: (channel: number) => void = () => {};
+  /** Device request gate; channels without a device request stay pending. */
+  canTransfer: (channel: number) => boolean = () => true;
 
   /** Mark a channel's transfer pending (CHCR START), as a ctrl write would. */
   request(channel: number): void {
@@ -81,7 +83,7 @@ export class Dma {
   run(bus: DmaBus): void {
     for (let ch = 0; ch < 7; ch++) {
       const ctrl = this.regs[ch * 3 + 2]!;
-      if ((ctrl & CHCR_START) === 0 || !this.enabled(ch)) continue;
+      if ((ctrl & CHCR_START) === 0 || !this.enabled(ch) || !this.canTransfer(ch)) continue;
       if (ch === 6) this.runOtc(bus);
       else if (((ctrl >>> CHCR_SYNC_SHIFT) & 3) === CHCR_SYNC_LIST) this.runLinkedList(ch, bus);
       else this.runBlock(ch, bus);

@@ -84,6 +84,7 @@ export class Machine {
     this.dma.onComplete = (channel) => {
       if (channel === 4) this.kernel.deliver(0xf000_0009, 0x20);
     };
+    this.dma.canTransfer = (channel) => channel !== 3 || (this.cdrom.read(0) & 0x40) !== 0;
   }
 
   /** DmaBus adapter: DMA reads/writes RAM words and drives GP0. */

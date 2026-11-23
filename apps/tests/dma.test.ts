@@ -43,6 +43,22 @@ function setupBlockRead(d: Dma, bus: TestBus, addr: number, count: number, ch = 
   d.regs[ch * 3 + 2] = 0x0200_0000 | 0x1100_0000; // to RAM (bit0=0), start, burst
 }
 
+describe("DMA device request gating", () => {
+  test("a blocked channel stays pending until its device requests transfer", () => {
+    const bus = new TestBus();
+    const d = new Dma();
+    let ready = false;
+    d.canTransfer = () => ready;
+    setupBlockRead(d, bus, 0x1000, 1);
+    d.dpcr = 0x8000;
+    d.run(bus);
+    expect(d.regs[11]! & 0x0100_0000).not.toBe(0);
+    ready = true;
+    d.run(bus);
+    expect(d.regs[11]! & 0x0100_0000).toBe(0);
+  });
+});
+
 describe("DMA block transfers (RAM loopback)", () => {
   test("ch3 CDROM burst read: N seeded words land at MADR", () => {
     const bus = new TestBus();

@@ -337,6 +337,11 @@ export class BiosKernel {
         const count = this.cpu.r[6]!;
         return fd === 1 || fd === 2 ? count : -1;
       }
+      case 0x5b: { // ChangeClearPad(clear)
+        if (handle === 0) this.cpu.ports.write32(0x1f80_1070, ~(1 << 7), 32);
+        this.updatePads();
+        return 0;
+      }
       case 0x56: // GetC0Table
         return 0x8000_2000;
       case 0x57: // GetB0Table

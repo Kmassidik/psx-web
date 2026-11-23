@@ -108,7 +108,7 @@ export class Cdrom {
       case 3: {
         const idx = this.regs[0]! & 3;
         if (idx === 0) {
-          if ((v & 0x80) !== 0 && this.sectorReady) this.dataEnabled = true; // BFRD
+          if ((v & 0x80) !== 0) this.dataEnabled = true; // BFRD request may precede the sector
         } else if (idx === 1) {
           this.regs[4] = v; // Interrupt Enable
         } else if (idx === 2) {
@@ -188,7 +188,6 @@ export class Cdrom {
     this.stat &= ~0x08; // data arriving => disc present, IdError cleared
     this.dataOffset = 0;
     this.sectorReady = true;
-    this.dataEnabled = false;
     if (this.reading && !this.dataPending) {
       this.dataPending = true; // INT1 + DRQ owed on next exec()
     }

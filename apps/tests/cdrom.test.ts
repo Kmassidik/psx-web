@@ -333,6 +333,18 @@ describe("CDROM read-data sector delivery after ReadN", () => {
   });
 });
 
+describe("CDROM BFRD requests", () => {
+  test("BFRD requested before sector arrival remains latched", () => {
+    const { c } = make();
+    c.write(0, 0);
+    c.write(3, 0x80);
+    const sector = new Uint8Array(2352);
+    sector[24] = 0x42;
+    c.setSectorData(sector);
+    expect(c.readData8()).toBe(0x42);
+  });
+});
+
 describe("CDROM register banks", () => {
   test("bank 1 port 1 writes data without issuing an invalid command", () => {
     const { c, ints } = make();

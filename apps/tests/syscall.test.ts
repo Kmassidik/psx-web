@@ -126,6 +126,9 @@ describe("BIOS-free kernel services", () => {
     m.irqStatus = 0x10;
     expect(call(m, 0xc0, 0x0a, 0, 0)).toBe(0);
     expect(m.irqStatus & 0x10).toBe(0);
+    m.irqStatus = 0x80;
+    expect(call(m, 0xb0, 0x5b, 0)).toBe(0);
+    expect(m.irqStatus & 0x80).toBe(0);
   });
 
   test("legacy pad reads active-low X and direction buttons", () => {
