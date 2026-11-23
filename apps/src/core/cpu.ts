@@ -55,7 +55,7 @@ export class Cpu {
   constructor(
     readonly mem: Memory,
     readonly rcnt: Rcnt,
-    readonly gte: { execute(instr: number): void; mfc2(r: number): number; mtc2(r: number, v: number): void },
+    readonly gte: { execute(instr: number): void; mfc2(r: number): number; mtc2(r: number, v: number): void; cr?: Uint32Array },
     /** MMIO port hooks: port address → value or undefined to fall through. */
     readonly ports: {
       read32(va: number): number | undefined;
@@ -289,8 +289,10 @@ export class Cpu {
       case 0x12: // COP2 (GTE)
         if ((instr & (1 << 25)) === 0) {
           switch (rs) {
-            case 0x00: if (rt) r[rt] = this.gte.mfc2(rt); break; // MFC2
-            case 0x04: case 0x06: this.gte.mtc2(rt, r[rt]!); break; // MTC2 (cts 2/6 both write)
+            case 0x00: if (rt) r[rt] = this.gte.mfc2(rd & 31); break; // MFC2
+            case 0x02: if (rt) r[rt] = this.gte.cr?.[rd & 31] ?? 0; break; // CFC2
+            case 0x04: this.gte.mtc2(rd & 31, r[rt]!); break; // MTC2
+            case 0x06: if (this.gte.cr) this.gte.cr[rd & 31] = r[rt]!; break; // CTC2
             default: return false;
           }
         } else {

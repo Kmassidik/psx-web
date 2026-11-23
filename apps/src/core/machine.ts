@@ -35,16 +35,14 @@ export class Machine {
   readonly mem = new Memory();
   readonly gpu = new Gpu();
   readonly rcnt = new Rcnt();
+  private readonly gteCore = new GTE();
   /** cop2 adapter: MFC2/MTC2 route GTE data regs (dr[r]) + control fallback. */
   readonly gte = {
     execute: (instr: number) => this.gteCore.execute(instr),
-    mfc2: (r: number) => (r < 16 ? (this.gteCore.dr[r]! | 0) : (this.gteCore.cr[r - 16]! | 0)),
-    mtc2: (r: number, v: number) => {
-      if (r < 16) this.gteCore.dr[r] = v | 0;
-      else this.gteCore.cr[r - 16] = v >>> 0;
-    },
+    mfc2: (r: number) => this.gteCore.dr[r & 31]! | 0,
+    mtc2: (r: number, v: number) => { this.gteCore.dr[r & 31] = v | 0; },
+    cr: this.gteCore.cr,
   };
-  private readonly gteCore = new GTE();
   irqStatus = 0;
   irqMask = 0;
   readonly pads = { pad1: 0xffff, pad2: 0xffff };
@@ -248,6 +246,13 @@ export class Machine {
     const hi = this.cpu.hi, lo = this.cpu.lo;
     const inBranchDelay = this.cpu.inBranchDelay;
     const loadDelay = { ...this.cpu.loadDelay };
+    // An interrupt enters after the interrupted load has completed. Commit it
+    // for the handler without consuming the saved delay slot in the caller.
+    if (this.cpu.loadDelay.slot !== 0) {
+      const { reg, value } = this.cpu.loadDelay;
+      if (reg !== 0) this.cpu.r[reg] = value;
+      this.cpu.loadDelay.slot = 0;
+    }
     this.cpu.cp0[13] = 0x400;
     this.cpu.cp0[14] = pc;
     const sr = this.cpu.cp0[12]!;

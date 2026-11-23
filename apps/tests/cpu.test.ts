@@ -9,6 +9,7 @@ import { describe, test, expect } from "bun:test";
 import { Memory } from "../src/core/memory";
 import { Cpu } from "../src/core/cpu";
 import { Rcnt } from "../src/core/rcnt";
+import { GTE } from "../src/core/gte";
 
 const gteStub = { execute: () => {}, mfc2: () => 0, mtc2: () => {} };
 const noPorts = { read32: () => undefined, write32: () => false };
@@ -38,6 +39,32 @@ function prng(seed: number): () => number {
     return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
   };
 }
+
+describe("COP2 register transfers", () => {
+  test("MFC2/MTC2/CFC2/CTC2 use the CPU rt and GTE rd fields", () => {
+    const mem = new Memory();
+    const gte = new GTE();
+    const cpu = new Cpu(mem, new Rcnt(), {
+      execute: (instr) => gte.execute(instr),
+      mfc2: (r) => gte.dr[r & 31]!,
+      mtc2: (r, v) => { gte.dr[r & 31] = v | 0; },
+      cr: gte.cr,
+    }, noPorts);
+    gte.cr[31] = 0x123;
+    mem.store32(0, 0x4842_f800); // CFC2 r2, cr31
+    mem.store32(4, 0x4883_f000); // MTC2 r3, dr30
+    mem.store32(8, 0x4804_f000); // MFC2 r4, dr30
+    mem.store32(12, 0x48c5_f800); // CTC2 r5, cr31
+    cpu.reset(0);
+    cpu.r[3] = 0x55;
+    cpu.r[5] = 0x99;
+    for (let i = 0; i < 4; i++) cpu.step();
+    expect(cpu.r[2]).toBe(0x123);
+    expect(gte.dr[30]).toBe(0x55);
+    expect(cpu.r[4]).toBe(0x55);
+    expect(gte.cr[31]).toBe(0x99);
+  });
+});
 
 describe("CP0 exception status stack", () => {
   test("delay-slot state is cleared after the slot and preserved for exceptions", () => {
