@@ -228,6 +228,21 @@ describe("Hardware interrupt delivery", () => {
     expect(m.cpu.r).toEqual(registers);
   });
 
+  test("exception entry settles a pending load without consuming the caller's delay", () => {
+    const m = new Machine();
+    m.mem.store32(0x10000, 0xac22_0000); // SW v0, 0(at): must observe exception v0=1
+    m.mem.store32(0x10004, 0x03e0_0008); // JR ra
+    m.mem.store32(0x10008, 0);
+    m.cpu.reset(0x8003_0000);
+    m.cpu.r[1] = 0x400;
+    m.cpu.r[2] = 7;
+    m.cpu.loadDelay = { slot: 1, reg: 2, value: 0 };
+    m["runHandler"](0x8001_0000, "exception");
+    expect(m.mem.load32(0x400)).toBe(1);
+    expect(m.cpu.r[2]).toBe(7);
+    expect(m.cpu.loadDelay).toEqual({ slot: 1, reg: 2, value: 0 });
+  });
+
   test("handler timer waits advance RCNT and complete beyond 10,000 instructions", () => {
     for (const dynarec of [false, true]) {
     const m = new Machine();
