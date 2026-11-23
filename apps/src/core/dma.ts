@@ -133,6 +133,8 @@ export class Dma {
       }
       addr = (addr + step) & RAM_ADDR_MASK;
     }
+    this.regs[ch * 3] = addr >>> 0;
+    this.regs[ch * 3 + 1] = 0;
   }
 
   /** ch2 sync 2: header = nextAddr|words<<24, walk until 0xFFFFFF next. */

@@ -53,6 +53,8 @@ describe("DMA block transfers (RAM loopback)", () => {
     d.dpcr = 0x0800_8888; // enable ch0,1,2,3,4,6 (nibble bit3)
     d.run(bus);
     for (let i = 0; i < 4; i++) expect(bus.readRam(0x1000 + i * 4)).toBe(0xaa00 + i);
+    expect(d.regs[9]).toBe(0x1010);
+    expect(d.regs[10]).toBe(0);
   });
 
   test("BCR count 0 behaves as 0x10000 words (boundary)", () => {
