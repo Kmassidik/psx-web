@@ -171,7 +171,11 @@ export class Cdrom {
 
   /** Feed the next requested sector after DMA consumed the previous one. */
   pump(): void {
-    if (!this.reading || this.dataPending || this.sectorReady || !this.sectorProvider) return;
+    if (!this.reading || this.dataPending || !this.sectorProvider) return;
+    // DMA commonly drains the 800h-byte user area even when Setmode exposes
+    // the 924h-byte whole-sector buffer. Once that transfer is complete, the
+    // next sector may replace the unread trailing bytes.
+    if (this.sectorReady && this.dataOffset < 2048) return;
     const data = this.sectorProvider(this.seekTargetLba);
     if (!data) return;
     this.seekTargetLba++;

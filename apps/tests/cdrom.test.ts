@@ -451,6 +451,27 @@ describe("CDROM sector data DMA", () => {
     expect(c.readData8()).toBe(0);
   });
 
+  test("pump advances after a 2048-byte drain in 2340-byte mode", () => {
+    const c = new Cdrom();
+    const next = new Uint8Array(2352);
+    next[24] = 0x99;
+    c.setSectorProvider(() => next);
+    c.write(0, 0);
+    c.write(2, 0x20);
+    c.write(1, 0x0e);
+    c.ack(0x07);
+    c.write(1, 0x06);
+    c.setSectorData(new Uint8Array(2352));
+    c.ack(0x07);
+    c.exec();
+    c.ack(0x07);
+    c.write(0, 0);
+    c.write(3, 0x80);
+    for (let i = 0; i < 512; i++) c.readData32();
+    c.pump();
+    expect(c.sectorBuffer[24]).toBe(0x99);
+  });
+
   test("readData32 streams exactly 2048 user bytes", () => {
     const c = new Cdrom();
     const sector = new Uint8Array(2352);
