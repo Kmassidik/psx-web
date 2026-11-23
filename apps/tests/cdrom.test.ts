@@ -48,6 +48,16 @@ describe("CDROM command sequences (per-command INT/stat contract)", () => {
     expect(c.read(1)).toBe(0x00);
   });
 
+  test("GetlocP reports current track, index, relative and absolute MSF", () => {
+    const { c } = make();
+    c.setSectorProvider(() => new Uint8Array(2352));
+    for (const p of [0x07, 0x07, 0x37]) c.write(2, p);
+    c.write(1, 0x02);
+    c.ack(0x07);
+    c.write(1, 0x11);
+    expect(Array.from({ length: 8 }, () => c.read(1))).toEqual([1, 1, 7, 7, 0x37, 7, 9, 0x37]);
+  });
+
   test("ReadN(06): INT3(02h), then INT1(2xh) with DRQ per fed sector", () => {
     const { c, ints } = make();
     c.write(1, 0x06);

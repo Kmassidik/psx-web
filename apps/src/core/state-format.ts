@@ -95,7 +95,7 @@ export const MACHINE_STATE_SCHEMA = O({
   spu,
   cdrom,
   dma: O({ regs: T("u32", 21), dpcr: N, dicr: N }),
-  rcnt: O({ regs: T("u16", 9), hblank: N }),
+  rcnt: O({ regs: T("u16", 9), hblank: N, irqFired: N }),
   mdec,
   joypad,
   kernel,

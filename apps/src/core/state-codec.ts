@@ -1,5 +1,5 @@
 /** Versioned, checksummed, schema-driven binary encoding for emulator state. */
-export const SAVE_STATE_VERSION = 5;
+export const SAVE_STATE_VERSION = 6;
 const MAGIC = 0x52505358; // "RPSX"
 const HEADER_SIZE = 16;
 

@@ -62,7 +62,7 @@ export interface MachineState {
   gte: { v: Int16Array; dr: Int32Array; cr: Uint32Array };
   gpu: GpuState; spu: SpuState; cdrom: CdromState;
   dma: { regs: Uint32Array; dpcr: number; dicr: number };
-  rcnt: { regs: Uint16Array; hblank: number };
+  rcnt: { regs: Uint16Array; hblank: number; irqFired: number };
   mdec: MdecState; joypad: JoypadState; kernel: KernelState;
   machine: { irqStatus: number; irqMask: number; vblankAcc: number; spuDmaDone: boolean;
     pads: { pad1: number; pad2: number } };
@@ -106,7 +106,7 @@ export function captureMachineState(m: Machine): MachineState {
   const g = gpuInternal(m), cd = cdromInternal(m), sp = spuInternal(m);
   const md = mdecInternal(m), joy = joypadInternal(m), core = coreInternal(m);
   // Private timing state has no public accessor; this adapter is capture-only.
-  const timer = m.rcnt as unknown as { hblank: number };
+  const timer = m.rcnt as unknown as { hblank: number; irqFired: number };
   return {
     memory: {
       ram: m.mem.ram.slice(), parallel: m.mem.parallel.slice(),
@@ -155,7 +155,7 @@ export function captureMachineState(m: Machine): MachineState {
       seekTargetMsf: cd.seekTargetMsf.slice(),
     },
     dma: { regs: m.dma.regs.slice(), dpcr: m.dma.dpcr, dicr: m.dma.dicr },
-    rcnt: { regs: m.rcnt.regs.slice(), hblank: timer.hblank },
+    rcnt: { regs: m.rcnt.regs.slice(), hblank: timer.hblank, irqFired: timer.irqFired },
     mdec: {
       regs: md.regs,
       tables: {
@@ -239,8 +239,8 @@ export function restoreMachineState(m: Machine, s: MachineState): void {
   cd.seekTargetMsf = cs.seekTargetMsf.slice();
   m.dma.regs.set(s.dma.regs); m.dma.dpcr = s.dma.dpcr; m.dma.dicr = s.dma.dicr;
   // Private timing state has no public accessor; input was schema-validated.
-  const timer = m.rcnt as unknown as { hblank: number };
-  m.rcnt.regs.set(s.rcnt.regs); timer.hblank = s.rcnt.hblank;
+  const timer = m.rcnt as unknown as { hblank: number; irqFired: number };
+  m.rcnt.regs.set(s.rcnt.regs); timer.hblank = s.rcnt.hblank; timer.irqFired = s.rcnt.irqFired;
 
   const md = mdecInternal(m), ms = s.mdec;
   md.regs = ms.regs; md.tables.qtY.set(ms.tables.qtY); md.tables.qtUV.set(ms.tables.qtUV);

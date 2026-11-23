@@ -395,8 +395,20 @@ export class Cdrom {
         this.pushResponse(3, hdr);
         break;
       }
-      case 0x11: { // GetlocP (8 bytes subchannel Q, BCD; zeros: no disc)
-        this.pushResponse(3, [0, 1, 0, 0, 0, 0, 0, 0]);
+      case 0x11: { // GetlocP: track/index + relative/absolute MSF from current sector
+        if (!this.sectorProvider) {
+          this.pushResponse(3, [0, 0, 0, 0, 0, 0, 0, 0]);
+          break;
+        }
+        const bcd = (value: number) => (((value / 10) | 0) << 4) | (value % 10);
+        const total = this.seekTargetLba;
+        const relative = Math.max(0, total);
+        const absolute = Math.max(0, total + 150);
+        this.pushResponse(3, [
+          0x01, 0x01,
+          bcd((relative / (60 * 75)) | 0), bcd(((relative / 75) | 0) % 60), bcd(relative % 75),
+          bcd((absolute / (60 * 75)) | 0), bcd(((absolute / 75) | 0) % 60), bcd(absolute % 75),
+        ]);
         break;
       }
       case 0x12: { // SetSession

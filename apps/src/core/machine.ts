@@ -172,7 +172,10 @@ export class Machine {
           const timer = ((va - 0x1f80_1100) >>> 4) & 3;
           const reg = (va & 0x0f) >>> 2;
           if (timer < 3 && reg < 3) {
-            if (reg === 1) this.rcnt.regs[timer * 3] = 0; // any mode write resets the counter
+            if (reg === 1) {
+              this.rcnt.regs[timer * 3] = 0; // any mode write resets the counter
+              this.rcnt.rearmIrq(timer);
+            }
             this.rcnt.regs[timer * 3 + reg] = v & 0xffff;
           }
           return true;
@@ -268,6 +271,15 @@ export class Machine {
       if (!this.cpu.step()) break;
       if (this.kernel.consumeExceptionReturn()) break;
       this.rcnt.tick(1);
+      this.vblankAcc++;
+      if (this.vblankAcc >= 563_000) {
+        this.vblankAcc -= 563_000;
+        this.kernel.updatePads();
+        this.gpu.toggleField();
+        this.raiseIrq(IRQ_VBLANK);
+        this.kernel.deliver(0xf200_0003, 0x02);
+        this.kernel.deliver(0xf000_0001, 0x1000);
+      }
       if (steps % 20_000 === 0) {
         this.runDma();
         this.cdrom.pump();

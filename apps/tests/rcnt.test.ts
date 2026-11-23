@@ -10,7 +10,7 @@ describe("Root counters (rcnt_update contract)", () => {
     expect(r.regs[0]).toBe(3); // (0xfffe+5) & 0xffff
   });
 
-  test("target IRQ fires when value reaches target and mode bit8 set", () => {
+  test("target IRQ fires when value reaches target and mode bit4 set", () => {
     const r = new Rcnt();
     let fired = 0;
     r.irqFire = () => fired++;
@@ -20,6 +20,23 @@ describe("Root counters (rcnt_update contract)", () => {
     expect(fired).toBe(1);
     expect(r.regs[1]! & 0x0800).not.toBe(0); // reached-target flag (bit 11)
     expect(r.regs[0]).toBe(10);
+  });
+
+  test("one-shot IRQ fires once until rearmed, repeat mode fires each target", () => {
+    const r = new Rcnt();
+    let fired = 0;
+    r.irqFire = () => fired++;
+    r.regs[1] = 0x0010;
+    r.regs[2] = 1;
+    r.tick(1);
+    r.rearmIrq(0);
+    r.tick(1);
+    expect(fired).toBe(1);
+    r.regs[1] = 0x0050;
+    r.regs[0] = 0;
+    r.rearmIrq(0);
+    r.tick(1);
+    expect(fired).toBe(2);
   });
 
   test("zero-return mode resets counter after target", () => {

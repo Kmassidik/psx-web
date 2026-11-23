@@ -32,6 +32,8 @@ interface CdromDebug {
   sectorReady: boolean;
   dataOffset: number;
   queued: unknown[];
+  seekTargetLba: number;
+  modeReg: number;
 }
 
 const args = process.argv.slice(2);
@@ -146,6 +148,7 @@ let commands = 0;
 let dataWords = 0;
 let lastCommand = -1;
 const commandCounts = new Map<number, number>();
+const setlocCounts = new Map<number, number>();
 const cdromWrite = machine.cdrom.write.bind(machine.cdrom);
 machine.cdrom.write = (addr, value) => {
   if ((addr & 3) === 1) {
@@ -154,6 +157,11 @@ machine.cdrom.write = (addr, value) => {
     commandCounts.set(lastCommand, (commandCounts.get(lastCommand) ?? 0) + 1);
   }
   cdromWrite(addr, value);
+  if ((addr & 3) === 1 && value === 0x02) {
+    const target = (machine.cdrom as unknown as CdromDebug).seekTargetLba;
+    setlocCounts.set(target, (setlocCounts.get(target) ?? 0) + 1);
+  }
+  if ((addr & 3) === 1 && value === 0x0e) console.log(`setmode ${(machine.cdrom as unknown as CdromDebug).modeReg.toString(16)}`);
 };
 const readData32 = machine.cdrom.readData32.bind(machine.cdrom);
 machine.cdrom.readData32 = () => {
@@ -225,6 +233,7 @@ const result = {
   checkpoints,
   final: checkpoints.at(-1),
   commands: Object.fromEntries([...commandCounts].map(([op, count]) => [hex(op, 2), count])),
+  setlocs: Object.fromEntries(setlocCounts),
   recentPcs: trace
     ? Array.from({ length: pcHistory.length }, (_, i) => hex(pcHistory[(pcHistoryIndex + i) % pcHistory.length]!))
     : undefined,
@@ -247,4 +256,4 @@ if (comparePath) {
   }
   if (difference === -1) console.log(`No checkpoint differences in first ${length} entries`);
 }
-console.log(JSON.stringify({ final: result.final, commands: result.commands, recentPcs: result.recentPcs }, null, 2));
+console.log(JSON.stringify({ final: result.final, commands: result.commands, setlocs: result.setlocs, recentPcs: result.recentPcs }, null, 2));

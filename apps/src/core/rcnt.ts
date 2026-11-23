@@ -6,9 +6,17 @@ export class Rcnt {
   /** [timer][value,mode,target] as raw registers, mirrors ePSXe layout. */
   readonly regs = new Uint16Array(9);
   private hblank = 0;
+  private irqFired = 0;
   irqFire: (line: number) => void = () => {};
 
-  reset(): void { this.regs.fill(0); this.hblank = 0; }
+  reset(): void { this.regs.fill(0); this.hblank = 0; this.irqFired = 0; }
+  rearmIrq(timer: number): void { this.irqFired &= ~(1 << timer); }
+
+  private fire(timer: number, mode: number): void {
+    if ((mode & 0x40) === 0 && (this.irqFired & (1 << timer)) !== 0) return;
+    this.irqFired |= 1 << timer;
+    this.irqFire(4 + timer);
+  }
 
   /** Advance by CPU cycles; called per slice from the frame loop. */
   tick(cycles: number): void {
@@ -27,12 +35,12 @@ export class Rcnt {
         value = (value + 1) & 0xffff;
         if (value === target && target !== 0) {
           this.regs[t * 3 + 1] = this.regs[t * 3 + 1]! | 0x0800;
-          if (irqOnTarget) this.irqFire(4 + t);
+          if (irqOnTarget) this.fire(t, mode);
           if (resetOnTarget) value = 0;
         }
         if (value === 0xffff) {
           this.regs[t * 3 + 1] = this.regs[t * 3 + 1]! | 0x1000;
-          if (irqOnOverflow) this.irqFire(4 + t);
+          if (irqOnOverflow) this.fire(t, mode);
         }
       }
       this.regs[t * 3] = value;
