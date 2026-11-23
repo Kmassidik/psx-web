@@ -92,13 +92,22 @@ export function MainWindow() {
         return;
       }
       let exeBytes = bytes;
+      let bootStage = "PS-X EXE";
       const m = new Machine();
       if (name.toLowerCase().endsWith(".mdf")) {
         const provider = createMdfSectorProvider(bytes);
         m.setSectorProvider(provider);
-        const discExe = readIsoFile(provider, "cdrom:\\B\\EXTREME3.EXE;1");
-        if (!discExe) throw new Error("No supported boot executable found in MDF");
-        exeBytes = discExe;
+        bootStage = "front-end parse";
+        const frontendBytes = readIsoFile(provider, "cdrom:\\FE.EXE;1");
+        if (!frontendBytes) throw new Error("No front-end executable found in MDF");
+        const frontendExe = parsePsExe(frontendBytes);
+        m.loadExe(frontendBytes, frontendExe.pc0, frontendExe.t_addr, frontendExe.data);
+        bootStage = "front-end run";
+        for (let i = 0; i < 300; i++) m.runSlice(20_000);
+        bootStage = "game parse";
+        const gameBytes = readIsoFile(provider, "cdrom:\\GAME.EXE;1");
+        if (!gameBytes) throw new Error("No game executable found in MDF");
+        exeBytes = gameBytes;
       }
       const exe = parsePsExe(exeBytes);
       m.loadExe(exeBytes, exe.pc0, exe.t_addr, exe.data);
@@ -128,7 +137,7 @@ export function MainWindow() {
         frames++;
         const now = performance.now();
         if (now - lastFps >= 1000) {
-          setState({ statusLine: `running ${name} · ${frames} fps` });
+          setState({ statusLine: `running ${name} · ${frames} fps · pc=0x${(machine.cpu.pc >>> 0).toString(16)}` });
           frames = 0;
           lastFps = now;
         }
@@ -137,7 +146,7 @@ export function MainWindow() {
       cancelAnimationFrame(rafRef.current);
       rafRef.current = requestAnimationFrame(tick);
     } catch (e) {
-      setState({ run: "error", lastError: String(e), statusLine: "load failed" });
+      setState({ run: "error", lastError: `${bootStage}: ${String(e)}`, statusLine: "load failed" });
     }
   }, []);
 

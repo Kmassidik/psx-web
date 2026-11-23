@@ -13,14 +13,6 @@ interface InterruptHandler {
   first: number;
 }
 
-export interface ExceptionContext {
-  pc: number;
-  sp: number;
-  fp: number;
-  gp: number;
-  s: number[];
-}
-
 interface BiosEvent {
   handle: number;
   class: number;
@@ -32,7 +24,7 @@ interface BiosEvent {
 }
 
 export class BiosKernel {
-  readonly state = { heapNext: 0, nextEvent: 0xf100_0000 | 0 };
+  readonly state = { heapNext: 0, kernelNext: 0x8000_4000, nextEvent: 0xf100_0000 | 0 };
   private readonly events: BiosEvent[] = [];
   private readonly interruptHandlers: InterruptHandler[] = [];
   private readonly pendingCallbacks: number[] = [];
@@ -87,18 +79,6 @@ export class BiosKernel {
 
   exceptionHook(): number {
     return this.customExit === 0 ? 0 : this.cpu.mem.load32(this.customExit);
-  }
-
-  exceptionContext(): ExceptionContext | undefined {
-    if (this.customExit === 0) return undefined;
-    const address = this.customExit;
-    return {
-      pc: this.cpu.mem.load32(address),
-      sp: this.cpu.mem.load32(address + 4),
-      fp: this.cpu.mem.load32(address + 8),
-      s: Array.from({ length: 8 }, (_, index) => this.cpu.mem.load32(address + 12 + index * 4)),
-      gp: this.cpu.mem.load32(address + 44),
-    };
   }
 
   updatePads(): number {
@@ -197,6 +177,13 @@ export class BiosKernel {
   private bCall(fn: number): number {
     const handle = this.cpu.r[4]!;
     switch (fn) {
+      case 0x00: { // alloc_kernel_memory(size)
+        const size = handle;
+        if (size <= 0) return 0;
+        const result = this.state.kernelNext;
+        this.state.kernelNext = (result + size + 7) & ~7;
+        return result;
+      }
       case 0x07: // DeliverEvent(class, spec)
         this.deliver(handle, this.cpu.r[5]!);
         return 0;

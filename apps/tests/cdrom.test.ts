@@ -61,14 +61,17 @@ describe("CDROM command sequences (per-command INT/stat contract)", () => {
     sector.set([0xaa, 0xbb], 12); // header bytes
     sector[2351] = 0x7f;
     c.setSectorData(sector);
-    expect(c.read(0) & 0x40).toBe(0x40); // DRQSTS: sector latched
+    expect(c.read(0) & 0x40).toBe(0); // BFRD not requested yet
+    c.write(0, 0);
+    c.write(3, 0x80);
+    expect(c.read(0) & 0x40).toBe(0x40); // DRQSTS after BFRD
     c.exec(); // deliver INT1
     expect(ints).toEqual([3, 1]);
     expect(c.read(1)).toBe(0x22); // Read + motor stat
     expect(c.sectorBuffer[13]).toBe(0xbb);
     expect(c.sectorBuffer[2351]).toBe(0x7f);
     c.ack(0x07);
-    expect(c.read(0) & 0x40).toBe(0x00); // DRQ cleared by ack
+    expect(c.read(0) & 0x40).toBe(0x40); // unread data remains after INT ack
   });
 
   test("SeekL(15)/SeekP(16): INT3(4xh) seek-stat then INT2 stat seek-cleared", () => {
@@ -183,7 +186,7 @@ describe("CDROM FIFO push/pop order", () => {
     // status: param non-empty, not full
     const s = c.read(0);
     expect(s & 0x08).toBe(0x00); // PRMEMPT false
-    expect(s & 0x10).toBe(0x00); // not 16 bytes
+    expect(s & 0x10).toBe(0x10); // not full
     // command 19h with invalid sub -> params preserved in FIFO (no$psx note)
     c.write(1, 0x19);
     c.ack(0x07);
@@ -243,12 +246,11 @@ describe("CDROM INT sequence counts", () => {
   test("command while INT pending is held until ack (no$psx mainloop)", () => {
     const { c, ints } = make();
     c.write(1, 0x01); // INT3 pending
-    c.write(1, 0x0a); // must be ignored while INT3 unacknowledged
+    c.write(1, 0x0a); // latched while INT3 is unacknowledged
     expect(ints).toEqual([3]);
     c.ack(0x07);
     c.exec();
-    expect(ints).toEqual([3]); // held command was dropped, not executed
-    c.write(1, 0x0a); // now accepted -> its own INT3
+    expect(ints).toEqual([3, 3]); // latched command executes after ack
     c.ack(0x07);
     c.exec();
     expect(ints).toEqual([3, 3, 2]);
@@ -299,6 +301,26 @@ describe("CDROM read-data sector delivery after ReadN", () => {
     c.exec();
     expect(ints.filter((i) => i === 1).length).toBe(0);
   });
+
+  test("Pause clears the old sector so a later ReadN can restart delivery", () => {
+    const { c } = make();
+    c.write(1, 0x06);
+    c.setSectorData(new Uint8Array(2352));
+    c.write(0, 0);
+    c.write(3, 0x80);
+    c.write(1, 0x09);
+    c.ack(0x07);
+    c.exec();
+    c.ack(0x07);
+    c.exec();
+    c.write(1, 0x06);
+    const next = new Uint8Array(2352);
+    next[24] = 0x42;
+    c.setSectorData(next);
+    c.write(0, 0);
+    c.write(3, 0x80);
+    expect(c.readData8()).toBe(0x42);
+  });
 });
 
 describe("CDROM error / latch behavior", () => {
@@ -342,6 +364,28 @@ describe("CDROM error / latch behavior", () => {
   });
 });
 
+describe("CDROM response availability", () => {
+  test("response-ready bit is clear when FIFO is empty", () => {
+    const { c } = make();
+    expect(c.read(0) & 0x20).toBe(0);
+    c.write(1, 0x01);
+    expect(c.read(0) & 0x20).toBe(0x20);
+    c.read(1);
+    expect(c.read(0) & 0x20).toBe(0);
+  });
+});
+
+describe("CDROM ready status polarities", () => {
+  test("BUSYSTS is active-high and PRMWRDY is set while not full", () => {
+    const { c } = make();
+    expect(c.read(0) & 0x80).toBe(0);
+    expect(c.read(0) & 0x10).toBe(0x10);
+    c.write(1, 0x0a);
+    c.write(1, 0x01); // latched behind pending INT3
+    expect(c.read(0) & 0x80).toBe(0x80);
+  });
+});
+
 describe("CDROM register 3 interrupt flags", () => {
   test("index 1 returns IFL instead of popping response data", () => {
     const { c } = make();
@@ -360,6 +404,10 @@ describe("CDROM sector data DMA", () => {
     sector[24] = 0x78;
     sector[25] = 0x56;
     c.setSectorData(sector);
+    expect(c.read(2)).toBe(0);
+    c.write(0, 0);
+    c.write(3, 0x80); // BFRD reload
+    expect(c.read(0) & 0x40).toBe(0x40);
     expect(c.read(2)).toBe(0x78);
     expect(c.read(2)).toBe(0x56);
   });
@@ -373,6 +421,8 @@ describe("CDROM sector data DMA", () => {
     sector[27] = 0x12;
     sector[24 + 2044] = 0xaa;
     c.setSectorData(sector);
+    c.write(0, 0);
+    c.write(3, 0x80);
     expect(c.readData32()).toBe(0x1234_5678);
     for (let i = 1; i < 512; i++) c.readData32();
     expect(c.readData32()).toBe(0);

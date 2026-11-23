@@ -163,13 +163,10 @@ describe("Hardware interrupt delivery", () => {
     const m = new Machine();
     m.installHleVectors();
     m.mem.store32(0x10000, 0x2408_0001);
-    m.mem.store32(0x10004, 0xafa8_0000); // SW t0, 0(sp) — must use saved sp
+    m.mem.store32(0x10004, 0xac28_0000); // SW t0, 0(t1)
     m.mem.store32(0x10008, 0x03e0_0008);
     m.mem.store32(0x1000c, 0);
     m.mem.store32(0x400, 0x8001_0000); // SaveState r31/pc
-    m.mem.store32(0x404, 0x500); // saved sp
-    m.mem.store32(0x408, 0x600); // saved fp
-    m.mem.store32(0x42c, 0x700); // saved gp
     m.cpu.reset(0xb0);
     m.cpu.r[9] = 0x19;
     m.cpu.r[4] = 0x400;

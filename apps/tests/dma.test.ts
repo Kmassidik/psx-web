@@ -40,7 +40,7 @@ function seed(bus: TestBus, idx: number, w: number): void {
 function setupBlockRead(d: Dma, bus: TestBus, addr: number, count: number, ch = 3): void {
   d.regs[ch * 3] = addr;
   d.regs[ch * 3 + 1] = count;
-  d.regs[ch * 3 + 2] = 0x0200_0000 | 0x1100_0001; // to RAM (bit0=1 per contract), start, burst
+  d.regs[ch * 3 + 2] = 0x0200_0000 | 0x1100_0000; // to RAM (bit0=0), start, burst
 }
 
 describe("DMA block transfers (RAM loopback)", () => {
@@ -74,7 +74,7 @@ describe("DMA block transfers (RAM loopback)", () => {
     seed(bus, 0x101, 0x1111_2222);
     d.regs[4 * 3] = 0x400;
     d.regs[4 * 3 + 1] = 2;
-    d.regs[4 * 3 + 2] = 0x1100_0000; // from RAM (drain), start
+    d.regs[4 * 3 + 2] = 0x1100_0001; // from RAM (drain), start
     d.dpcr = 0x8_0000; // ch4 enable (nibble 4, bit 19)
     d.request(4);
     d.run(bus);
@@ -90,7 +90,7 @@ describe("DMA block transfers (RAM loopback)", () => {
     seed(bus, 0x202, 9);
     d.regs[0] = 0x800;
     d.regs[1] = 3;
-    d.regs[2] = 0x1100_0000; // from RAM (bit0 clear), start
+    d.regs[2] = 0x1100_0001; // from RAM (bit0 set), start
     d.dpcr = 0x0008; // ch0 enable (nibble 0, bit 3)
     d.request(0);
     d.run(bus);
@@ -104,7 +104,7 @@ describe("DMA block transfers (RAM loopback)", () => {
     bus.mdecOutQueue = [0xc0de_0001, 0xc0de_0002];
     d.regs[1 * 3] = 0x2000;
     d.regs[1 * 3 + 1] = 2;
-    d.regs[1 * 3 + 2] = 0x1200_0001; // to RAM (bit0), start, burst
+    d.regs[1 * 3 + 2] = 0x1200_0000; // to RAM (bit0 clear), start, burst
     d.dpcr = 0x0080; // ch1 enable (nibble 1, bit 7)
     d.request(1);
     d.run(bus);
@@ -118,7 +118,7 @@ describe("DMA block transfers (RAM loopback)", () => {
     bus.mdecOutQueue = [10, 11];
     d.regs[1 * 3] = 0x2010; // ends here, next -4
     d.regs[1 * 3 + 1] = 2;
-    d.regs[1 * 3 + 2] = 0x1200_0011; // to RAM (bit0), start, burst, step dec
+    d.regs[1 * 3 + 2] = 0x1200_0010; // to RAM (bit0 clear), start, burst, step dec
     d.dpcr = 0x0080;
     d.request(1);
     d.run(bus);
@@ -132,7 +132,7 @@ describe("DMA block transfers (RAM loopback)", () => {
     bus.mdecOutQueue = [42];
     d.regs[1 * 3] = 0x1f_fffc;
     d.regs[1 * 3 + 1] = 2;
-    d.regs[1 * 3 + 2] = 0x1200_0001;
+    d.regs[1 * 3 + 2] = 0x1200_0000;
     d.dpcr = 0x0080;
     d.request(1);
     d.run(bus);
@@ -183,7 +183,7 @@ describe("DMA ch2 GPU", () => {
     seed(bus, 0x301, 0x00ff_00ff);
     d.regs[2 * 3] = 0xc00;
     d.regs[2 * 3 + 1] = 2;
-    d.regs[2 * 3 + 2] = 0x1100_0000; // from RAM (bit0 clear), burst (NOT list)
+    d.regs[2 * 3 + 2] = 0x1100_0001; // from RAM (bit0 set), burst (NOT list)
     d.dpcr = 0x0800;
     d.request(2);
     d.run(bus);
@@ -248,7 +248,7 @@ describe("DMA control (DPCR gating, DICR, enable bits)", () => {
     bus.cdromQueue = [5];
     d.regs[3 * 3] = 0x2000;
     d.regs[3 * 3 + 1] = 1;
-    d.regs[3 * 3 + 2] = 0x0200_0000 | 0x1100_0001; // config (bit0=1 to RAM per contract), no start bit yet
+    d.regs[3 * 3 + 2] = 0x0200_0000 | 0x1100_0000; // config (bit0=0 to RAM), no start bit yet
     d.dpcr = 0x8000;
     d.request(3);
     d.run(bus);
@@ -330,7 +330,7 @@ describe("DMA control (DPCR gating, DICR, enable bits)", () => {
     seed(bus, 0x400, 0x1234);
     d.regs[1 * 3] = 0x1000;
     d.regs[1 * 3 + 1] = 1;
-    d.regs[1 * 3 + 2] = 0x1200_0001; // ch1 to RAM (bit0)
+    d.regs[1 * 3 + 2] = 0x1200_0000; // ch1 to RAM (bit0 clear)
     bus.mdecOutQueue = [0x5a5a];
     d.regs[6 * 3] = 0x1010;
     d.regs[6 * 3 + 1] = 2;

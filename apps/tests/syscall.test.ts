@@ -23,6 +23,13 @@ describe("BIOS-free kernel services", () => {
     expect(call(m, 0xa0, 0x33, 1)).toBe(0x8001_3408 | 0);
   });
 
+  test("alloc_kernel_memory returns aligned kernel blocks", () => {
+    const m = new Machine();
+    m.installHleVectors();
+    expect(call(m, 0xb0, 0x00, 0x15)).toBe(0x8000_4000 | 0);
+    expect(call(m, 0xb0, 0x00, 1)).toBe(0x8000_4018 | 0);
+  });
+
   test("GetB0Table returns callable function entries", () => {
     const m = new Machine();
     m.installHleVectors();
@@ -58,13 +65,22 @@ describe("BIOS-free kernel services", () => {
     expect(call(m, 0xb0, 0x0b, event)).toBe(1);
   });
 
-  test("CDROM acknowledge marks the internal acknowledge event ready", () => {
+  test("CDROM acknowledgement does not mark transfer completion", () => {
     const m = new Machine();
     m.installHleVectors();
     m.cdrom.write(0, 1);
     m.cdrom.write(1, 0x01);
-    expect(call(m, 0xb0, 0x0b, 0xf100_0000 | 0)).toBe(1);
     expect(call(m, 0xb0, 0x0b, 0xf100_0000 | 0)).toBe(0);
+  });
+
+  test("draining the sector marks the CDROM completion event ready", () => {
+    const m = new Machine();
+    m.installHleVectors();
+    m.cdrom.setSectorData(new Uint8Array(2352));
+    m.cdrom.write(0, 0);
+    m.cdrom.write(3, 0x80);
+    for (let i = 0; i < 512; i++) m.cdrom.readData32();
+    expect(call(m, 0xb0, 0x0b, 0xf100_0000 | 0)).toBe(1);
   });
 
   test("callback-mode delivery executes the event function once", () => {
@@ -78,7 +94,7 @@ describe("BIOS-free kernel services", () => {
     call(m, 0xb0, 0x0c, event);
     m.cpu.r[1] = 0x500;
     m.dma.dicr = 1 << 4;
-    m.dma.raiseIrq();
+    m.runSlice(1);
     m["runEventCallbacks"]();
     expect(m.mem.load32(0x500)).toBe(1);
     expect(m["kernel"].takeEventCallbacks()).toEqual([]);
@@ -92,7 +108,7 @@ describe("BIOS-free kernel services", () => {
     expect(call(m, 0xb0, 0x0b, event)).toBe(0);
     call(m, 0xb0, 0x0c, event);
     m.dma.dicr = 1 << 4;
-    m.dma.raiseIrq();
+    m.runSlice(1);
     expect(call(m, 0xb0, 0x0b, event)).toBe(1);
     expect(call(m, 0xb0, 0x0b, event)).toBe(0);
   });

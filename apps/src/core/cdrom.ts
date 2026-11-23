@@ -44,6 +44,7 @@ export class Cdrom {
   private sectorProvider?: (lba: number) => Uint8Array | undefined;
   private dataOffset = 0;
   private sectorReady = false;
+  private dataEnabled = false;
   private secondPending = false; // second response queued for next exec
   private motorOn = false;
   private shellOpen = false; // stat bit4 sticky
@@ -70,6 +71,7 @@ export class Cdrom {
     this.dataPending = false;
     this.dataOffset = 0;
     this.sectorReady = false;
+    this.dataEnabled = false;
     this.secondPending = false;
     this.motorOn = false;
     this.shellOpen = false;
@@ -100,7 +102,7 @@ export class Cdrom {
       case 3: {
         const idx = this.regs[0]! & 3;
         if (idx === 0) {
-          // Request register: bit7 BFRD reloads data fifo (no-op: no DMA yet)
+          if ((v & 0x80) !== 0 && this.sectorReady) this.dataEnabled = true; // BFRD
         } else if (idx === 1) {
           this.regs[4] = v; // Interrupt Enable
         } else if (idx === 2) {
@@ -120,14 +122,12 @@ export class Cdrom {
       case 0: {
         const idx = this.regs[0]! & 3;
         let s = idx;
-        if (!this.busy) s |= 0x80; // BUSYSTS 0=ready
+        if (this.busy) s |= 0x80; // BUSYSTS 1=busy
         if (this.paramFifo.length === 0) s |= 0x08; // PRMEMPT
-        if (this.paramFifo.length === 16) s |= 0x10; // PRMWRDY(=not full)
-        if (this.respFifo.length === 0) s |= 0x20; // RSLRRDY(0=empty->1?)
-        // no$psx: bit5 "Response fifo empty (0=Empty)" -- set when EMPTY is 0,
-        // i.e. bit5=1 means response available.
+        if (this.paramFifo.length < 16) s |= 0x10; // PRMWRDY: not full
+        // RSLRRDY: set only while an unread response byte is available.
         if (this.respFifo.length > 0) s |= 0x20;
-        if (this.dataPending) s |= 0x40; // DRQSTS data available
+        if (this.dataEnabled && this.sectorReady) s |= 0x40; // DRQSTS data available
         return s;
       }
       case 3: {
@@ -178,6 +178,7 @@ export class Cdrom {
     this.stat &= ~0x08; // data arriving => disc present, IdError cleared
     this.dataOffset = 0;
     this.sectorReady = true;
+    this.dataEnabled = false;
     if (this.reading && !this.dataPending) {
       this.dataPending = true; // INT1 + DRQ owed on next exec()
     }
@@ -187,10 +188,14 @@ export class Cdrom {
   readData8(): number {
     const start = (this.modeReg & 0x08) !== 0 ? 12 : 24;
     const size = (this.modeReg & 0x08) !== 0 ? 2340 : 2048;
-    if (!this.sectorReady || this.dataOffset >= size) return 0;
+    if (!this.dataEnabled || !this.sectorReady || this.dataOffset >= size) return 0;
     const value = this.sectorBuffer[start + this.dataOffset]!;
     this.dataOffset++;
-    if (this.dataOffset >= size) this.sectorReady = false;
+    if (this.dataOffset >= size) {
+      this.sectorReady = false;
+      this.dataEnabled = false;
+      this.irqFire(2, 0); // all requested sector data consumed
+    }
     return value;
   }
 
@@ -198,10 +203,14 @@ export class Cdrom {
   readData32(): number {
     const start = (this.modeReg & 0x08) !== 0 ? 12 : 24;
     const size = (this.modeReg & 0x08) !== 0 ? 2340 : 2048;
-    if (!this.sectorReady || this.dataOffset >= size) return 0;
+    if (!this.dataEnabled || !this.sectorReady || this.dataOffset >= size) return 0;
     const offset = start + this.dataOffset;
     this.dataOffset += 4;
-    if (this.dataOffset >= size) this.sectorReady = false;
+    if (this.dataOffset >= size) {
+      this.sectorReady = false;
+      this.dataEnabled = false;
+      this.irqFire(2, 0); // all requested sector data consumed
+    }
     return (this.sectorBuffer[offset]! |
       (this.sectorBuffer[offset + 1]! << 8) |
       (this.sectorBuffer[offset + 2]! << 16) |
@@ -217,10 +226,15 @@ export class Cdrom {
 
   private command(op: number): void {
     // no$psx: if an INT is pending, the command is not executed yet. We do not
-    // latch it (UNVERIFIED: hardware latches one command); the caller must
-    // acknowledge and re-issue.
-    if (this.cmd !== -1 || this.queued.length > 0 || (this.regs[5]! & 0x07) !== 0)
+    // Hardware holds one command while a previous response awaits acknowledgement.
+    if (this.cmd !== -1 || this.queued.length > 0 || (this.regs[5]! & 0x07) !== 0) {
+      if (this.cmd === -1) {
+        this.cmd = op;
+        this.cmdParams = this.paramFifo.splice(0);
+        this.busy = true; // latched until IFL/response-queue drainage
+      }
       return;
+    }
     this.stat &= ~0x01; // a newly accepted command clears the previous error status
     this.busy = true; // command transmission busy until first response
     this.cmdParams = this.paramFifo.splice(0); // command consumes the FIFO
@@ -323,6 +337,9 @@ export class Cdrom {
         const s0 = this.stat & ~0x20;
         this.motorOn = false;
         this.reading = false;
+        this.dataPending = false;
+        this.sectorReady = false;
+        this.dataEnabled = false;
         this.pushResponse(3, [s0]);
         const s1 = s0 & ~0x02;
         this.stat = s1;
@@ -333,6 +350,9 @@ export class Cdrom {
       case 0x09: { // Pause
         const s0 = this.stat;
         this.reading = false;
+        this.dataPending = false;
+        this.sectorReady = false;
+        this.dataEnabled = false;
         this.pushResponse(3, [s0]);
         const s1 = s0 & ~0x20; // Read bit cleared
         this.stat = s1;
@@ -444,6 +464,9 @@ export class Cdrom {
         this.modeReg = 0;
         this.motorOn = false;
         this.reading = false;
+        this.dataPending = false;
+        this.sectorReady = false;
+        this.dataEnabled = false;
         this.pushResponse(3, [this.stat & ~0x20]);
         break;
       }

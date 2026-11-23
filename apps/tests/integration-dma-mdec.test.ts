@@ -22,7 +22,7 @@ describe("DMA ↔ MDEC integration", () => {
     m.dma.regs[1 * 3 + 0] = 0x2000 >>> 0; // MADR ch1
     m.dma.regs[1 * 3 + 1] = 0x0001_0000; // BCR: 1 block, 0 words→0x10000… use 4 words
     m.dma.regs[1 * 3 + 1] = (1 << 16) | 4; // 1 block × 4 words
-    m.dma.regs[1 * 3 + 2] = (0x0100_0000 | 1) >>> 0; // start, burst, TO RAM (ch1 drains MDEC)
+    m.dma.regs[1 * 3 + 2] = 0x0100_0000; // start, burst, TO RAM (ch1 drains MDEC)
     m.dma.dpcr = (1 << (4 * 1 + 3)) >>> 0;
     m.dma.request(1);
     m.dma.run({ ...bus, readRam: bus.readRam, writeRam: bus.writeRam });

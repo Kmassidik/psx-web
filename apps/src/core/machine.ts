@@ -20,7 +20,7 @@ import { Gpu, VRAM_W, VRAM_H } from "./gpu";
 import { Rcnt } from "./rcnt";
 import { GTE } from "./gte";
 import { Dma } from "./dma";
-import { BiosKernel, type ExceptionContext } from "./syscall";
+import { BiosKernel } from "./syscall";
 import { Cdrom } from "./cdrom";
 import { Spu } from "./spu";
 import { Mdec } from "./mdec";
@@ -62,13 +62,15 @@ export class Machine {
     this.rcnt.irqFire = (line) => { this.raiseIrq(1 << line); };
     this.dma.raiseIrq = () => {
       this.raiseIrq(IRQ_DMA);
-      // SPU DMA (channel 4) completion: libspu reports "command completed".
-      if ((this.dma.dicr & (1 << 4)) !== 0) this.kernel.deliver(0xf000_0009, 0x20);
     };
     this.cdrom.irqFire = (_line, kind) => {
       this.raiseIrq(IRQ_CDROM);
-      const spec = kind === 1 ? 0x40 : kind === 2 ? 0x20 : kind === 3 ? 0x10 : kind === 4 ? 0x80 : 0x8000;
-      this.kernel.deliver(0xf000_0003, spec);
+      // INT3 is only an acknowledgement, not transfer completion. INT1 means
+      // data ready and uses no CDROM event spec. INT4/INT5 are end/error.
+      if (kind === 0) this.kernel.deliver(0xf000_0003, 0x10);
+      else if (kind === 2) this.kernel.deliver(0xf000_0003, 0x20);
+      else if (kind === 4) this.kernel.deliver(0xf000_0003, 0x80);
+      else if (kind === 5) this.kernel.deliver(0xf000_0003, 0x8000);
     };
     this.spu.irqFire = () => { this.raiseIrq(IRQ_SPU); };
     this.cpu = new Cpu(this.mem, this.rcnt, this.gte, {
@@ -197,7 +199,7 @@ export class Machine {
     for (const callback of this.kernel.takeEventCallbacks()) this.runHandler(callback);
   }
 
-  private runHandler(entry: number, context?: ExceptionContext): void {
+  private runHandler(entry: number): void {
     if (entry === 0) return;
     const registers = this.cpu.r.slice();
     const cp0 = this.cpu.cp0.slice();
@@ -205,12 +207,6 @@ export class Machine {
     const hi = this.cpu.hi, lo = this.cpu.lo;
     const inBranchDelay = this.cpu.inBranchDelay;
     const loadDelay = { ...this.cpu.loadDelay };
-    if (context) {
-      this.cpu.r[29] = context.sp;
-      this.cpu.r[30] = context.fp;
-      this.cpu.r[28] = context.gp;
-      for (let i = 0; i < 8; i++) this.cpu.r[16 + i] = context.s[i]!;
-    }
     this.cpu.cp0[13] = 0x400;
     this.cpu.cp0[14] = pc;
     this.cpu.r[2] = 1; // custom exception hooks are entered with v0 = 1
@@ -231,6 +227,7 @@ export class Machine {
   }
 
   private vblankAcc = 0;
+  private spuDmaDone = false;
 
   /** Run up to n CPU instructions with DMA/CDROM/SPU/rcnt service per slice. */
   runSlice(n: number): boolean {
@@ -240,11 +237,11 @@ export class Machine {
       this.mem.store32(0x84, 0x4200_0010);
     }
     const ok = this.cpu.run(n);
-    if (deliverException) {
-      const context = this.kernel.exceptionContext();
-      this.runHandler(context?.pc ?? this.kernel.exceptionHook(), context);
-    }
+    if (deliverException) this.runHandler(this.kernel.exceptionHook());
     this.runDma();
+    const spuComplete = (this.dma.dicr & (1 << 4)) !== 0;
+    if (spuComplete && !this.spuDmaDone) this.kernel.deliver(0xf000_0009, 0x20);
+    this.spuDmaDone = spuComplete;
     this.runEventCallbacks();
     this.cdrom.pump();
     this.cdrom.exec(); // one interrupt-bucket per slice (timing: see cdrom.ts)
