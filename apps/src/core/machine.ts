@@ -312,7 +312,7 @@ export class Machine {
   }
 
   private vblankAcc = 0;
-  private spuDmaDone = false;
+  private gpuDmaDone = false;
   private audioSink: SpuAudioSink | null = null;
   private audioLeft = new Float32Array(0);
   private audioRight = new Float32Array(0);
@@ -335,9 +335,9 @@ export class Machine {
       this.runHandler(this.kernel.exceptionHook(), "exception");
     }
     this.runDma();
-    const spuComplete = (this.dma.dicr & (1 << 4)) !== 0;
-    if (spuComplete && !this.spuDmaDone) this.kernel.deliver(0xf000_0009, 0x20);
-    this.spuDmaDone = spuComplete;
+    const gpuComplete = (this.dma.dicr & (1 << 2)) !== 0;
+    if (gpuComplete && !this.gpuDmaDone) this.kernel.deliver(0xf000_0009, 0x20);
+    this.gpuDmaDone = gpuComplete;
     this.runEventCallbacks();
     this.cdrom.pump();
     this.cdrom.exec(); // one interrupt-bucket per slice (timing: see cdrom.ts)

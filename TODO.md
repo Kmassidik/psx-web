@@ -8,7 +8,7 @@ Detailed execution plan for turning the current emulator checkpoint into a relia
 - 3Xtreme reaches `FE.EXE` → `GAME.EXE` and draws a red loading bar: 1,560 nonblack pixels.
 - 3Xtreme has **not** reached a title screen or gameplay; do not describe it as playable.
 - The BIOS-free/HLE route is selected. A real BIOS remains optional and user-supplied.
-- Latest full-suite checkpoint: 393 tests passing and TypeScript clean; repeatable browser E2E also passes.
+- Latest full-suite checkpoint: 398 tests passing and TypeScript clean; repeatable browser E2E also passes.
 - RCNT MMIO and handler timer waits are fixed; extended runs transfer full CD sectors without the previous invalid control flow.
 - Game images and BIOS files stay local and ignored. Emulation remains client-side.
 - Source files should remain below 600 lines; split modules by responsibility instead of growing monoliths.

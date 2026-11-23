@@ -98,6 +98,16 @@ describe("BIOS-free kernel services", () => {
     expect(m.rcnt.regs[3]).toBe(0);
   });
 
+  test("GPU DMA channel 2 completion delivers the GPU event", () => {
+    const m = new Machine();
+    m.installHleVectors();
+    const event = call(m, 0xb0, 0x08, 0xf000_0009, 0x20, 0x2000, 0);
+    call(m, 0xb0, 0x0c, event);
+    m.dma.dicr = 1 << 2;
+    m.runSlice(1);
+    expect(call(m, 0xb0, 0x0b, event)).toBe(1);
+  });
+
   test("cache, console write, CD cleanup, and RCNT clear services return documented results", () => {
     const m = new Machine();
     m.installHleVectors();
@@ -158,7 +168,7 @@ describe("BIOS-free kernel services", () => {
     const event = call(m, 0xb0, 0x08, 0xf000_0009, 0x20, 0x1000, 0x8001_0000);
     call(m, 0xb0, 0x0c, event);
     m.cpu.r[1] = 0x500;
-    m.dma.dicr = 1 << 4;
+    m.dma.dicr = 1 << 2;
     m.runSlice(1);
     m["runEventCallbacks"]();
     expect(m.mem.load32(0x500)).toBe(1);
@@ -172,7 +182,7 @@ describe("BIOS-free kernel services", () => {
     expect(event).toBe(0xf100_0005 | 0);
     expect(call(m, 0xb0, 0x0b, event)).toBe(0);
     call(m, 0xb0, 0x0c, event);
-    m.dma.dicr = 1 << 4;
+    m.dma.dicr = 1 << 2;
     m.runSlice(1);
     expect(call(m, 0xb0, 0x0b, event)).toBe(1);
     expect(call(m, 0xb0, 0x0b, event)).toBe(0);
