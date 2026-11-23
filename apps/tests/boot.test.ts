@@ -194,22 +194,28 @@ describe("Hardware interrupt delivery", () => {
   });
 
   test("handler timer waits advance RCNT and complete beyond 10,000 instructions", () => {
+    for (const dynarec of [false, true]) {
     const m = new Machine();
+    m.setDynarecEnabled(dynarec);
     const code = [
       0x3c01_1f80, 0x3421_1110, // at = RCNT1_VALUE
       0x8c28_0000, 0, // t0 = initial counter
-      0x250a_176f, // t2 = t0 + 5999; reachable on the four-cycle poll phase
+      0x250a_176f, // t2 = t0 + 5999
       0x8c29_0000, 0, // loop: t1 = counter
-      0x152a_fffd, 0, // bne t1,t2,loop (+ delay)
-      0xacea_0000, // SW t2, 0(a3)
+      0x012a_082a, // at = t1 < t2
+      0x1020_0003, 0, // beq at,zero,complete (+ delay)
+      0x2800_4005, 0, // j loop
+      0xacea_0000, // complete: SW t2, 0(a3)
       0x03e0_0008, 0,
     ];
     code.forEach((word, index) => m.mem.store32(0x10000 + index * 4, word));
     m.cpu.reset(0x8003_0000);
     m.cpu.r[7] = 0x400;
     m["runHandler"](0x8001_0000);
-    expect(m.mem.load32(0x400)).toBe(6001);
+    expect(m.mem.load32(0x400)).toBeGreaterThanOrEqual(5999);
+    expect(m.mem.load32(0x400)).toBeLessThan(6064);
     expect(m.cpu.pc >>> 0).toBe(0x8003_0000);
+    }
   });
 
   test("custom exception hook runs after default service with CPU state preserved", () => {

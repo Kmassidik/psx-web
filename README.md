@@ -16,7 +16,7 @@ Bun toolchain, React UI, zero server-side emulation — the browser is the engin
 | SPU (24 voices, ADPCM, gauss, ADSR) | done | 27 tests |
 | MDEC (macroblock decoder + DMA) | done | golden vectors + full DMA decode |
 | Disc loaders (CUE/BIN, ISO, CHD v4/v5, PBP) | done | 34 tests |
-| Dynarec (WASM tier) | in progress | parity suite |
+| Dynarec (WASM tier, opt-in) | done | parity + self-loop browser E2E |
 | UI (React, ePSXe-blueprint dialogs) | done | browser E2E + config tests |
 
 Boot proof: a hand-assembled PS-X EXE runs the full loader → CPU → bus → GPU →
@@ -24,7 +24,7 @@ canvas pipeline, with `rgb(0,255,0)` verified in browser E2E. 3Xtreme reaches
 its front-end/game executables and renders a red loading bar, but has **not**
 reached a title screen or gameplay and is not yet described as playable.
 
-Current verification: 370 unit/integration tests, strict TypeScript, and a
+Current verification: 377 unit/integration tests, strict TypeScript, and a
 repeatable browser E2E scenario covering rendering, run controls, fullscreen,
 audio unlock/mute/volume, persisted settings, and Native/2×/4× geometric rendering. See `TODO.md` for remaining
 commercial-game, persistence, performance, and compatibility work.
