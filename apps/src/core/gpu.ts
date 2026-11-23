@@ -50,6 +50,7 @@ export class Gpu {
   // Keep the original power-on shape for composeFrame compatibility. GP1(00h)
   // below installs the hardware reset values before software configures video.
   private displayMode = 0x07;
+  private oddField = false;
   private dmaDirection = 0;
   private horizontalStart = 0;
   private horizontalEnd = 640 * 4;
@@ -358,9 +359,13 @@ export class Gpu {
     }
   }
 
+  toggleField(): void {
+    this.oddField = !this.oddField;
+  }
+
   readGPUSTAT(): number {
     const mode = this.displayMode;
-    return (0x1c00_0000
+    return ((this.oddField ? 0x8000_0000 : 0) | 0x1c00_0000
       | (this.dmaDirection << 29)
       | (this.dispEnable ? 0 : 0x0080_0000)
       | ((mode & 0x80) << 7)

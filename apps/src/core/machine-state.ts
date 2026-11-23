@@ -2,7 +2,7 @@ import type { Machine } from "./machine";
 
 interface GpuState {
   vram: Uint16Array; screen: Uint8Array; gpur1: number; gpur2: number; dispEnable: boolean;
-  displayMode: number; dmaDirection: number; horizontalStart: number; horizontalEnd: number;
+  displayMode: number; oddField: boolean; dmaDirection: number; horizontalStart: number; horizontalEnd: number;
   verticalStart: number; verticalEnd: number;
   display: { x: number; y: number; width: number; height: number; enabled: boolean;
     interlaced: boolean; pal: boolean; colorDepth: number };
@@ -48,6 +48,7 @@ interface JoypadState {
   packetPort: number; command: number; addressed: boolean;
 }
 interface KernelState {
+  kernelAllocations: { address: number; size: number }[];
   state: { heapNext: number; kernelNext: number; nextEvent: number };
   events: { handle: number; class: number; spec: number; mode: number; func: number;
     enabled: boolean; ready: boolean }[];
@@ -76,7 +77,10 @@ interface VoiceInternal {
 }
 interface SpuInternal extends Omit<SpuState, "voices"> { voices: VoiceInternal[] }
 interface MdecInternal extends Omit<MdecState, "rl" | "out"> { rl: Uint16Array; out: Uint32Array }
-interface KernelInternal extends KernelState { sectorProvider?: unknown }
+interface KernelInternal extends Omit<KernelState, "kernelAllocations"> {
+  kernelAllocations: Map<number, number>;
+  sectorProvider?: unknown;
+}
 interface CoreInternal {
   gteCore: MachineState["gte"]; kernel: KernelInternal;
   vblankAcc: number; spuDmaDone: boolean;
@@ -116,7 +120,7 @@ export function captureMachineState(m: Machine): MachineState {
     gte: { v: core.gteCore.v.slice(), dr: core.gteCore.dr.slice(), cr: core.gteCore.cr.slice() },
     gpu: {
       vram: g.vram.slice(), screen: g.screen.slice(), gpur1: g.gpur1, gpur2: g.gpur2,
-      dispEnable: g.dispEnable, displayMode: g.displayMode, dmaDirection: g.dmaDirection,
+      dispEnable: g.dispEnable, displayMode: g.displayMode, oddField: g.oddField, dmaDirection: g.dmaDirection,
       horizontalStart: g.horizontalStart, horizontalEnd: g.horizontalEnd,
       verticalStart: g.verticalStart, verticalEnd: g.verticalEnd, display: {
         x: g.display.x, y: g.display.y, width: g.display.width, height: g.display.height,
@@ -174,6 +178,7 @@ export function captureMachineState(m: Machine): MachineState {
       packetPort: joy.packetPort, command: joy.command, addressed: joy.addressed,
     },
     kernel: {
+      kernelAllocations: Array.from(core.kernel.kernelAllocations, ([address, size]) => ({ address, size })),
       state: { ...core.kernel.state }, events: core.kernel.events.map((event) => ({ ...event })),
       interruptHandlers: core.kernel.interruptHandlers.map((handler) => ({ ...handler })),
       pendingCallbacks: core.kernel.pendingCallbacks.slice(), padDest: core.kernel.padDest,
@@ -198,7 +203,7 @@ export function restoreMachineState(m: Machine, s: MachineState): void {
 
   const g = gpuInternal(m), gs = s.gpu;
   g.vram.set(gs.vram); g.screen.set(gs.screen); g.gpur1 = gs.gpur1; g.gpur2 = gs.gpur2;
-  g.dispEnable = gs.dispEnable; g.displayMode = gs.displayMode; g.dmaDirection = gs.dmaDirection;
+  g.dispEnable = gs.dispEnable; g.displayMode = gs.displayMode; g.oddField = gs.oddField; g.dmaDirection = gs.dmaDirection;
   g.horizontalStart = gs.horizontalStart; g.horizontalEnd = gs.horizontalEnd;
   g.verticalStart = gs.verticalStart; g.verticalEnd = gs.verticalEnd;
   Object.assign(g.display, gs.display);
@@ -265,6 +270,8 @@ export function restoreMachineState(m: Machine, s: MachineState): void {
   joy.packetIndex = js.packetIndex; joy.packetPort = js.packetPort; joy.command = js.command; joy.addressed = js.addressed;
 
   const ks = s.kernel;
+  core.kernel.kernelAllocations.clear();
+  for (const allocation of ks.kernelAllocations) core.kernel.kernelAllocations.set(allocation.address, allocation.size);
   Object.assign(core.kernel.state, ks.state);
   core.kernel.events.splice(0, core.kernel.events.length, ...ks.events.map((event) => ({ ...event })));
   core.kernel.interruptHandlers.splice(0, core.kernel.interruptHandlers.length,

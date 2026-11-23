@@ -18,7 +18,7 @@ const cpu = O({
 });
 const gpu = O({
   vram: T("u16", VRAM_W * VRAM_H), screen: T("u8", 640 * 480 * 4),
-  gpur1: N, gpur2: N, dispEnable: B, displayMode: N, dmaDirection: N,
+  gpur1: N, gpur2: N, dispEnable: B, displayMode: N, oddField: B, dmaDirection: N,
   horizontalStart: N, horizontalEnd: N, verticalStart: N, verticalEnd: N,
   display: O({
     x: N, y: N, width: N, height: N, enabled: B, interlaced: B, pal: B, colorDepth: N,
@@ -74,6 +74,7 @@ const joypad = O({
   response: A(N, 32), sent: A(N, 32), packetIndex: N, packetPort: N, command: N, addressed: B,
 });
 const kernel = O({
+  kernelAllocations: A(O({ address: N, size: N }), 1024),
   state: O({ heapNext: N, kernelNext: N, nextEvent: N }),
   events: A(O({
     handle: N, class: N, spec: N, mode: N, func: N, enabled: B, ready: B,

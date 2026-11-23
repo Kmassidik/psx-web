@@ -59,14 +59,46 @@ const provider = (lba: number) => {
 };
 const machine = new Machine();
 if (args.includes("--dynarec")) machine.setDynarecEnabled(true);
+if (args.includes("--no-exception-hook")) {
+  const runHandler = machine["runHandler"].bind(machine);
+  machine["runHandler"] = (entry, kind) => {
+    if (kind !== "exception") runHandler(entry, kind);
+  };
+}
 machine.setSectorProvider(provider);
 const hex = (value: number, width = 8) => (value >>> 0).toString(16).padStart(width, "0");
 if (args.includes("--handler-trace")) {
+  let active = 0;
+  const counts = new Map<number, number>();
+  const hleCounts = new Map<string, number>();
+  const hle = machine.cpu.hleSyscall!;
+  Object.defineProperty(machine.cpu, "hleSyscall", { value: (table: number, fn: number) => {
+    if (active) {
+      const key = `${table.toString(16)}(${fn.toString(16)})`;
+      hleCounts.set(key, (hleCounts.get(key) ?? 0) + 1);
+    }
+    return hle(table, fn);
+  } });
   const runHandler = machine["runHandler"].bind(machine);
-  machine["runHandler"] = (entry: number) => {
+  machine["runHandler"] = (entry: number, kind?: "event" | "vblank" | "exception") => {
     console.log(`handler enter ${hex(entry)} cycles=${machine.cpu.cycles}`);
-    runHandler(entry);
+    const before = machine.diagnostics.handlerTruncations;
+    active++;
+    runHandler(entry, kind);
+    active--;
     console.log(`handler exit ${hex(entry)} cycles=${machine.cpu.cycles} truncations=${machine.diagnostics.handlerTruncations}`);
+    if (machine.diagnostics.handlerTruncations !== before) {
+      console.log("handler hot pcs", [...counts].sort((a, b) => b[1] - a[1]).slice(0, 12).map(([pc, count]) => `${hex(pc)}=${count}`).join(" "));
+      console.log(`handler kind ${machine.diagnostics.lastHandlerKind}`);
+      const sp = machine.diagnostics.lastHandlerRegisters[29] ?? 0;
+      console.log(`timer current=${machine.rcnt.regs[3]} saved=${hex(machine.mem.load32(sp + 0x10))} sp=${hex(sp)}`);
+      console.log(`handler registers v0=${hex(machine.diagnostics.lastHandlerRegisters[2] ?? 0)} s0=${hex(machine.diagnostics.lastHandlerRegisters[16] ?? 0)} s1=${hex(machine.diagnostics.lastHandlerRegisters[17] ?? 0)} s2=${hex(machine.diagnostics.lastHandlerRegisters[18] ?? 0)} ra=${hex(machine.diagnostics.lastHandlerRegisters[31] ?? 0)}`);
+      const kernel = machine["kernel"] as unknown as { interruptHandlers: { priority: number; struc: number; first: number }[] };
+      console.log("interrupt chains", kernel.interruptHandlers.map((handler) => `${handler.priority}:${hex(handler.struc)}:${hex(handler.first)}`).join(" "));
+      console.log("handler hle calls", [...hleCounts].sort((a, b) => b[1] - a[1]).slice(0, 12).map(([key, count]) => `${key}=${count}`).join(" "));
+      counts.clear();
+      hleCounts.clear();
+    }
   };
 }
 
@@ -74,12 +106,16 @@ const frontendBytes = readIsoFile(provider, "cdrom:\\FE.EXE;1");
 if (!frontendBytes) throw new Error("No FE.EXE;1 found");
 const frontend = parsePsExe(frontendBytes);
 machine.loadExe(frontendBytes, frontend.pc0, frontend.t_addr, frontend.data);
-for (let i = 0; i < 300; i++) {
+const frontendSliceCount = Number(args.find((arg) => arg.startsWith("--frontend-slices="))?.split("=")[1] ?? 300);
+for (let i = 0; i < frontendSliceCount; i++) {
   machine.runSlice(20_000);
-  console.log(`front-end ${i + 1}/300 pc=${hex(machine.cpu.pc)} cycles=${machine.cpu.cycles} truncations=${machine.diagnostics.handlerTruncations}`);
+  console.log(`front-end ${i + 1}/300 pc=${hex(machine.cpu.pc)} cycles=${machine.cpu.cycles} truncations=${machine.diagnostics.handlerTruncations} last=${hex(machine.diagnostics.lastHandlerEntry)}/${hex(machine.diagnostics.lastHandlerPc)}`);
 }
 console.log(`front-end complete pc=${hex(machine.cpu.pc)} cycles=${machine.cpu.cycles} truncations=${machine.diagnostics.handlerTruncations}`);
-if (args.includes("--frontend-only")) process.exit(0);
+if (args.includes("--frontend-only")) {
+  if (ramPath) writeFileSync(ramPath, machine.mem.ram);
+  process.exit(0);
+}
 const gameBytes = readIsoFile(provider, "cdrom:\\GAME.EXE;1");
 if (!gameBytes) throw new Error("No GAME.EXE;1 found");
 const game = parsePsExe(gameBytes);
@@ -116,9 +152,9 @@ if (trace) {
 }
 
 function nonBlackPixels(): number {
-  machine.gpu.composeFrame();
+  const frame = machine.gpu.composeDisplayFrame();
   let count = 0;
-  const pixels = machine.gpu.screen;
+  const pixels = frame.rgba;
   for (let i = 0; i < pixels.length; i += 4) {
     if (pixels[i] !== 0 || pixels[i + 1] !== 0 || pixels[i + 2] !== 0) count++;
   }

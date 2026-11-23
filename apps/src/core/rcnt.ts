@@ -15,25 +15,27 @@ export class Rcnt {
     for (let t = 0; t < 3; t++) {
       const mode = this.regs[t * 3 + 1]!;
       const target = this.regs[t * 3 + 2]!;
-      const gate = (mode >>> 8) & 3;
-      let step = 1;
-      if (t === 1 && gate !== 0) step = 1; // HBlank gating is approximated active; never use a zero step
-      if (t === 2 && gate !== 0) step = 1;
-      let v = this.regs[t * 3]!;
-      let done = false;
-      for (let i = 0; i < cycles && !done; i += step) {
-        v = (v + 1) & 0xffff;
-        if (v === target && target !== 0 && (mode & 0x100)) {
-          this.irqFire(4 + t); // IRQ lines 4,5,6
-          this.regs[t * 3 + 1] = (mode & 0xffff) | 0x400; // target reached flag
-          if (mode & 0x1000) {
-            v = 0; // zero-return: wrap and keep counting this slice
-          } else {
-            done = true; // stop-at-target: freeze until next sync
-          }
+      const sync = mode & 7;
+      if (t === 2 && (sync === 0 || sync === 3)) continue; // synchronized counter 2 is stopped
+      const source = (mode >>> 8) & 3;
+      const step = t === 2 && source >= 2 ? 8 : 1;
+      const resetOnTarget = (mode & 0x08) !== 0;
+      const irqOnTarget = (mode & 0x10) !== 0;
+      const irqOnOverflow = (mode & 0x20) !== 0;
+      let value = this.regs[t * 3]!;
+      for (let i = 0; i < cycles; i += step) {
+        value = (value + 1) & 0xffff;
+        if (value === target && target !== 0) {
+          this.regs[t * 3 + 1] = this.regs[t * 3 + 1]! | 0x0800;
+          if (irqOnTarget) this.irqFire(4 + t);
+          if (resetOnTarget) value = 0;
+        }
+        if (value === 0xffff) {
+          this.regs[t * 3 + 1] = this.regs[t * 3 + 1]! | 0x1000;
+          if (irqOnOverflow) this.irqFire(4 + t);
         }
       }
-      this.regs[t * 3] = v;
+      this.regs[t * 3] = value;
     }
   }
 }

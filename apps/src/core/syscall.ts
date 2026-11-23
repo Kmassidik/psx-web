@@ -24,12 +24,14 @@ interface BiosEvent {
 }
 
 export class BiosKernel {
-  readonly state = { heapNext: 0, kernelNext: 0x8000_4000, nextEvent: 0xf100_0000 | 0 };
+  readonly state = { heapNext: 0, kernelNext: 0xa000_e000, nextEvent: 0xf100_0000 | 0 };
+  private readonly kernelAllocations = new Map<number, number>();
   private readonly events: BiosEvent[] = [];
   private readonly interruptHandlers: InterruptHandler[] = [];
   private readonly pendingCallbacks: number[] = [];
   private padDest = 0;
   private customExit = 0;
+  private returnFromException = false;
   private sectorProvider?: SectorProvider;
 
   setSectorProvider(provider: SectorProvider): void {
@@ -79,6 +81,20 @@ export class BiosKernel {
 
   exceptionHook(): number {
     return this.customExit === 0 ? 0 : this.cpu.mem.load32(this.customExit);
+  }
+
+  get customExitAddress(): number {
+    return this.customExit;
+  }
+
+  prepareExceptionReturn(): void {
+    this.returnFromException = false;
+  }
+
+  consumeExceptionReturn(): boolean {
+    const value = this.returnFromException;
+    this.returnFromException = false;
+    return value;
   }
 
   updatePads(): number {
@@ -177,12 +193,23 @@ export class BiosKernel {
   private bCall(fn: number): number {
     const handle = this.cpu.r[4]!;
     switch (fn) {
-      case 0x00: { // alloc_kernel_memory(size)
+      case 0x00: { // alloc_kernel_memory(size): bounded A000E000h..A000FFFFh control blocks
         const size = handle;
         if (size <= 0) return 0;
         const result = this.state.kernelNext;
-        this.state.kernelNext = (result + size + 7) & ~7;
+        const next = Math.ceil((result + size) / 8) * 8;
+        if (result < 0xa000_e000 || next > 0xa001_0000) return 0;
+        this.state.kernelNext = next;
+        this.kernelAllocations.set(result, next - result);
         return result;
+      }
+      case 0x01: { // free_kernel_memory(buf)
+        const address = handle >>> 0;
+        const size = this.kernelAllocations.get(address);
+        if (size === undefined) return 0;
+        this.kernelAllocations.delete(address);
+        if (address + size === this.state.kernelNext) this.state.kernelNext = address;
+        return 1;
       }
       case 0x07: // DeliverEvent(class, spec)
         this.deliver(handle, this.cpu.r[5]!);
@@ -200,6 +227,10 @@ export class BiosKernel {
         });
         return eventHandle;
       }
+      case 0x17: // ReturnFromException — abort the active handler, not its caller
+        this.returnFromException = true;
+        this.cpu.r[31] = 0x8000_0110;
+        return 0;
       case 0x18: // SetDefaultExitFromException
         this.customExit = 0;
         return 0;

@@ -26,8 +26,17 @@ describe("BIOS-free kernel services", () => {
   test("alloc_kernel_memory returns aligned kernel blocks", () => {
     const m = new Machine();
     m.installHleVectors();
-    expect(call(m, 0xb0, 0x00, 0x15)).toBe(0x8000_4000 | 0);
-    expect(call(m, 0xb0, 0x00, 1)).toBe(0x8000_4018 | 0);
+    expect(call(m, 0xb0, 0x00, 0x15)).toBe(0xa000_e000 | 0);
+    expect(call(m, 0xb0, 0x00, 1)).toBe(0xa000_e018 | 0);
+  });
+
+  test("kernel allocator frees tail blocks and never exceeds its 8 KiB region", () => {
+    const m = new Machine();
+    m.installHleVectors();
+    const first = call(m, 0xb0, 0x00, 0x20);
+    expect(call(m, 0xb0, 0x01, first)).toBe(1);
+    expect(call(m, 0xb0, 0x00, 0x2000)).toBe(first);
+    expect(call(m, 0xb0, 0x00, 0x2000)).toBe(0);
   });
 
   test("GetB0Table returns callable function entries", () => {

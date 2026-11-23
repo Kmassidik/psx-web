@@ -171,7 +171,10 @@ export class Machine {
         if (va >= 0x1f80_1100 && va <= 0x1f80_1128 && (va & 3) === 0) {
           const timer = ((va - 0x1f80_1100) >>> 4) & 3;
           const reg = (va & 0x0f) >>> 2;
-          if (timer < 3 && reg < 3) this.rcnt.regs[timer * 3 + reg] = v & 0xffff;
+          if (timer < 3 && reg < 3) {
+            if (reg === 1) this.rcnt.regs[timer * 3] = 0; // any mode write resets the counter
+            this.rcnt.regs[timer * 3 + reg] = v & 0xffff;
+          }
           return true;
         }
         if (va >= 0x1f80_1080 && va <= 0x1f80_10f7) {
@@ -219,17 +222,18 @@ export class Machine {
   }
 
   private runVblankHandler(): void {
-    this.runHandler(this.kernel.interruptHandler());
+    this.runHandler(this.kernel.interruptHandler(), "vblank");
   }
 
   private runEventCallbacks(): void {
     for (const callback of this.kernel.takeEventCallbacks()) this.runHandler(callback);
   }
 
-  readonly diagnostics = { handlerTruncations: 0 };
+  readonly diagnostics = { handlerTruncations: 0, lastHandlerEntry: 0, lastHandlerPc: 0, lastHandlerKind: "", lastHandlerRegisters: [] as number[] };
 
-  private runHandler(entry: number): void {
+  private runHandler(entry: number, kind = "event"): void {
     if (entry === 0) return;
+    this.kernel.prepareExceptionReturn();
     const registers = this.cpu.r.slice();
     const cp0 = this.cpu.cp0.slice();
     const pc = this.cpu.pc, nextPc = this.cpu.nextPc;
@@ -238,10 +242,20 @@ export class Machine {
     const loadDelay = { ...this.cpu.loadDelay };
     this.cpu.cp0[13] = 0x400;
     this.cpu.cp0[14] = pc;
-    this.cpu.r[2] = 1; // custom exception hooks are entered with v0 = 1
+    this.cpu.r[2] = kind === "exception" ? 1 : 0; // only exception hooks require v0 = 1
     this.cpu.pc = entry;
     this.cpu.nextPc = (entry + 4) | 0;
+    this.cpu.r[29] = 0x8000_fffc; // 4 KiB kernel exception stack, not the user stack
+    this.cpu.r[30] = 0;
     this.cpu.r[31] = 0x8000_0110;
+    const customExit = kind === "exception" ? this.kernel.customExitAddress : 0;
+    if (customExit !== 0) {
+      this.cpu.r[31] = this.mem.load32(customExit);
+      this.cpu.r[29] = this.mem.load32(customExit + 4);
+      this.cpu.r[30] = this.mem.load32(customExit + 8);
+      for (let reg = 16; reg <= 23; reg++) this.cpu.r[reg] = this.mem.load32(customExit + 0x0c + (reg - 16) * 4);
+      this.cpu.r[28] = this.mem.load32(customExit + 0x2c);
+    }
     // Keep handlers interpreted: their per-instruction RCNT ticking and GTE /
     // HLE / CP0 behavior must not be coarsened to block-granular timing.
     let steps = 0;
@@ -252,9 +266,31 @@ export class Machine {
       const isHleRam = handlerPc >= 0x8000_0100 && handlerPc < 0x8000_3000;
       if (handlerPc < 0x8000_0000 && !isVector && !isHleRam) break;
       if (!this.cpu.step()) break;
+      if (this.kernel.consumeExceptionReturn()) break;
       this.rcnt.tick(1);
+      this.vblankAcc++;
+      if (this.vblankAcc >= 563_000) {
+        this.vblankAcc -= 563_000;
+        this.kernel.updatePads();
+        this.gpu.toggleField();
+        this.raiseIrq(IRQ_VBLANK);
+        this.kernel.deliver(0xf200_0003, 0x02);
+        this.kernel.deliver(0xf000_0001, 0x1000);
+      }
+      if (steps % 20_000 === 0) {
+        this.runDma();
+        this.cdrom.pump();
+        this.cdrom.exec();
+        this.spu.tick(20_000);
+      }
     }
-    if (steps === 1_000_000 && this.cpu.pc !== 0x8000_0110) this.diagnostics.handlerTruncations++;
+    if (steps === 1_000_000 && this.cpu.pc !== 0x8000_0110) {
+      this.diagnostics.handlerTruncations++;
+      this.diagnostics.lastHandlerEntry = entry;
+      this.diagnostics.lastHandlerKind = kind;
+      this.diagnostics.lastHandlerPc = this.cpu.pc >>> 0;
+      this.diagnostics.lastHandlerRegisters = [...this.cpu.r];
+    }
     this.cpu.r.set(registers);
     this.cpu.cp0.set(cp0);
     this.cpu.pc = pc;
@@ -284,7 +320,7 @@ export class Machine {
       this.cpu.invalidateCode(0x84, 0x88);
     }
     const ok = this.cpu.run(n);
-    if (deliverException) this.runHandler(this.kernel.exceptionHook());
+    if (deliverException) this.runHandler(this.kernel.exceptionHook(), "exception");
     this.runDma();
     const spuComplete = (this.dma.dicr & (1 << 4)) !== 0;
     if (spuComplete && !this.spuDmaDone) this.kernel.deliver(0xf000_0009, 0x20);
@@ -312,6 +348,7 @@ export class Machine {
     if (this.vblankAcc >= 563_000) {
       this.vblankAcc -= 563_000;
       this.kernel.updatePads();
+      this.gpu.toggleField();
       this.raiseIrq(IRQ_VBLANK);
       this.kernel.deliver(0xf200_0003, 0x02);
       this.kernel.deliver(0xf000_0001, 0x1000);
