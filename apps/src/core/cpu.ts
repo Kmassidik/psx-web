@@ -67,7 +67,10 @@ export class Cpu {
     const vector = pc & 0x1fff_ffff;
     const isVector = vector === 0xa0 || vector === 0xb0 || vector === 0xc0;
     const isHleRam = pc >= 0x8000_0100 && pc < 0x8000_3000;
-    if (pc >= 0x8080_0000 && pc < 0xa000_0000 && !isVector && !isHleRam) return false;
+    const isLowRam = pc < 0x0080_0000;
+    const isInvalidKuseg = pc < 0x8000_0000 && !isLowRam;
+    const isInvalidKseg0 = pc >= 0x8080_0000 && pc < 0xa000_0000;
+    if ((isInvalidKuseg || isInvalidKseg0) && !isVector && !isHleRam) return false;
     if ((translate(this.pc).region as number) < 0) return false; // unmapped instruction address
     const instr = this.mem.load32(this.pc) | 0;
     const curPc = this.pc; // link/branch base BEFORE advancing
