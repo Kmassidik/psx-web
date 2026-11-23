@@ -635,10 +635,10 @@ export class GTE {
    * [R*IR1,G*IR2,B*IR3] SHL 4, depth-cue interpolation toward FC, and the
    * color FIFO push.
    */
-  private ncdsCore(vx: number, vy: number, vz: number, sf: boolean, lm: boolean): void {
+  private ncdsCore(vx: number, vy: number, vz: number, sf: boolean, lm: boolean, depthCue = true, useLlm = true): void {
     const shift = sf ? 12 : 0;
     const zero = [0, 0, 0];
-    this.storeRow(this.rowDots(CR_LLM, zero, vx, vy, vz), sf, lm);
+    if (useLlm) this.storeRow(this.rowDots(CR_LLM, zero, vx, vy, vz), sf, lm);
     const bk = [this.cr[CR_RBK]! | 0, this.cr[CR_GBK]! | 0, this.cr[CR_BBK]! | 0];
     this.storeRow(this.rowDots(CR_LCM, bk, this.ir1, this.ir2, this.ir3), sf, lm);
 
@@ -652,7 +652,13 @@ export class GTE {
     this.dr[25] = sat32(inMac[0]!);
     this.dr[26] = sat32(inMac[1]!);
     this.dr[27] = sat32(inMac[2]!);
-    this.interpolateColor(inMac, sf, lm);
+    if (depthCue) this.interpolateColor(inMac, sf, lm);
+    else {
+      for (let i = 1; i <= 3; i++) {
+        this.setMac(i as 1 | 2 | 3, inMac[i - 1]!, shift);
+        this.setIr(i as 1 | 2 | 3, this.dr[24 + i]!, lm);
+      }
+    }
     // Color FIFO = [MAC1/16,...]; the interpolateColor tail already left
     // IR1..3 = MAC1..3 saturated (its second setIr), satisfying the final
     // "[IR1,IR2,IR3] = [MAC1,MAC2,MAC3]" of the no$psx formula.
@@ -733,6 +739,16 @@ export class GTE {
         this.nclip();
         break;
 
+      case 0x1e: // NCS
+        this.ncdsCore(this.v[0]!, this.v[1]!, this.v[2]!, sf, lm, false);
+        break;
+
+      case 0x20: // NCT
+        this.ncdsCore(this.v[0]!, this.v[1]!, this.v[2]!, sf, lm, false);
+        this.ncdsCore(this.v[3]!, this.v[4]!, this.v[5]!, sf, lm, false);
+        this.ncdsCore(this.vx2, this.vy2, this.vz2, sf, lm, false);
+        break;
+
       case 0x12: // MVMVA
         this.mvmva(instr);
         break;
@@ -741,7 +757,25 @@ export class GTE {
         this.ncdsCore(this.v[0]!, this.v[1]!, this.v[2]!, sf, lm);
         break;
 
+      case 0x14: // CDP
+        this.ncdsCore(this.v[0]!, this.v[1]!, this.v[2]!, sf, lm, true, false);
+        break;
+
+      case 0x1b: // NCCS
+        this.ncdsCore(this.v[0]!, this.v[1]!, this.v[2]!, sf, lm);
+        break;
+
+      case 0x1c: // CC
+        this.ncdsCore(this.v[0]!, this.v[1]!, this.v[2]!, sf, lm, false, false);
+        break;
+
       case 0x16: // NCDT = NCDS over V0, V1, V2 (no$psx 0F80416h)
+        this.ncdsCore(this.v[0]!, this.v[1]!, this.v[2]!, sf, lm);
+        this.ncdsCore(this.v[3]!, this.v[4]!, this.v[5]!, sf, lm);
+        this.ncdsCore(this.vx2, this.vy2, this.vz2, sf, lm);
+        break;
+
+      case 0x3f: // NCCT = NCCS over V0, V1, V2
         this.ncdsCore(this.v[0]!, this.v[1]!, this.v[2]!, sf, lm);
         this.ncdsCore(this.v[3]!, this.v[4]!, this.v[5]!, sf, lm);
         this.ncdsCore(this.vx2, this.vy2, this.vz2, sf, lm);

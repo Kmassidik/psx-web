@@ -64,6 +64,51 @@ const NCDS_SF1 = 0x0048_0013; // NCDS sf=1 lm=0
 // 1. RTPS against hand-computed exact values (zero / ±1 / small inputs)
 // ---------------------------------------------------------------------------
 
+describe("Normal color command families", () => {
+  function colorScene(): GTE {
+    const g = new GTE();
+    setMatIdentity(g, 8, 1);
+    setMatIdentity(g, 16, 1);
+    g.dr[6] = 0x0040_2010;
+    g.dr[8] = 0x1000;
+    g.cr[21] = 0x2000;
+    g.cr[22] = 0x3000;
+    g.cr[23] = 0x4000;
+    g.v[0] = 1;
+    g.v[1] = 2;
+    g.v[2] = 3;
+    g.v[3] = 1;
+    g.v[4] = 2;
+    g.v[5] = 3;
+    g.dr[4] = 0x0002_0001;
+    g.dr[5] = 3;
+    return g;
+  }
+
+  test("NCS and NCT avoid far-color interpolation", () => {
+    const g = colorScene();
+    g.execute(0x1e);
+    expect(g.dr[22]).toBe(0x00c0_4010);
+    g.execute(0x20);
+    expect(g.dr[22]).toBe(0x00c0_4010);
+  });
+
+  test("CC, CDP, NCCS, and NCCT use their documented matrix and depth paths", () => {
+    const cc = colorScene();
+    cc.execute(0x1c);
+    expect(cc.dr[22]).toBe(0);
+    const cdp = colorScene();
+    cdp.execute(0x14);
+    expect(cdp.dr[22]).not.toBe(0x00c0_4010);
+    const nccs = colorScene();
+    nccs.execute(0x1b);
+    expect(nccs.dr[22]).not.toBe(0x00c0_4010);
+    const ncct = colorScene();
+    ncct.execute(0x3f);
+    expect(ncct.dr[22]).not.toBe(0x00c0_4010);
+  });
+});
+
 describe("AVSZ3/AVSZ4 exact averaging", () => {
   test("AVSZ3 uses SZ1..SZ3 and AVSZ4 uses SZ0..SZ3", () => {
     const g = new GTE();
