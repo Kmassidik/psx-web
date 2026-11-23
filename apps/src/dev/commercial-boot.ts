@@ -72,6 +72,14 @@ if (args.includes("--no-dequeue") || args.includes("--no-close-event")) {
   const bCall = kernel.bCall.bind(machine["kernel"]);
   kernel.bCall = (fn) => fn === 0x09 && args.includes("--no-close-event") ? 1 : bCall(fn);
 }
+if (args.includes("--clear-custom-exit")) {
+  const kernel = machine["kernel"] as unknown as { customExitAddress: number };
+  const runHandler = machine["runHandler"].bind(machine);
+  machine["runHandler"] = (entry, kind) => {
+    runHandler(entry, kind);
+    if (kind === "exception") (machine["kernel"] as unknown as { customExit: number }).customExit = 0;
+  };
+}
 if (args.includes("--no-exception-hook")) {
   const runHandler = machine["runHandler"].bind(machine);
   machine["runHandler"] = (entry, kind) => {

@@ -237,7 +237,7 @@ export class Cpu {
           case 0x01: if (r[rs]! >= 0) this.branch(simm); break; // BGEZ
           case 0x10: r[31] = (curPc + 8) | 0; if (r[rs]! < 0) this.branch(simm); break; // BLTZAL (links always)
           case 0x11: r[31] = (curPc + 8) | 0; if (r[rs]! >= 0) this.branch(simm); break; // BGEZAL (links always)
-          default: console.log('[cpu] unknown SPECIAL2 sub at pc=0x'+(this.pc>>>0).toString(16)); return false;
+          default: this.exception(10, 0); return true; // reserved instruction: enter exception and resume after it
         }
         return true;
 
@@ -266,7 +266,7 @@ export class Cpu {
               this.cp0[12] = ((sr & ~0x3f) | ((sr >>> 2) & 0x3)) >>> 0;
             }
             break;
-          default: console.log('[cpu] unknown SPECIAL2 sub at pc=0x'+(this.pc>>>0).toString(16)); return false;
+          default: this.exception(10, 0); return true; // reserved instruction: enter exception and resume after it
         }
         return true;
 
@@ -353,7 +353,7 @@ export class Cpu {
         return true;
       }
 
-            default: return false; // unknown major opcode
+            default: this.exception(10, 0); return true; // unknown major opcode: reserved instruction
     }
     return true;
   }
@@ -483,7 +483,7 @@ export class Cpu {
     this.cp0[12] = ((sr & ~0xf) | ((sr << 2) & 0x3f)) >>> 0;
     // If a handler exists at the vector, deliver the exception; otherwise
     // emulate the BIOS default outcome: return past the faulting instruction.
-    const epc = (this.pc - (this.inBranchDelay ? 4 : 0)) >>> 0;
+    const epc = (this.pc - (this.inBranchDelay ? 4 : 0) + (code === 10 ? 4 : 0)) >>> 0;
     this.cp0[14] = epc;
     if (this.mem.load32(0x8000_0080) !== 0) {
       this.pc = 0x8000_0080;

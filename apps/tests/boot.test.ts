@@ -139,6 +139,24 @@ describe("SPU audio attachment", () => {
   });
 });
 
+describe("Reserved instruction handling", () => {
+  test("unknown opcodes enter exception and resume after the fault", () => {
+    const m = new Machine();
+    m.installHleVectors();
+    m.cpu.reset(0x8001_0000);
+    m.mem.store32(0x10000, 0x7c00_0000);
+    m.mem.store32(0x10008, 0x2401_0001);
+    m.cpu.step();
+    m.cpu.step();
+    m.cpu.step();
+    m.cpu.step();
+    m.cpu.step();
+    m.cpu.step();
+    expect(m.cpu.r[1]).toBe(1);
+    expect(m.cpu.pc).toBe(0x8001_000c | 0);
+  });
+});
+
 describe("Hardware interrupt delivery", () => {
   test("I_STAT acknowledges selected IRQs by clearing zero bits", () => {
     const m = new Machine();
