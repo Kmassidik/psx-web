@@ -40,6 +40,22 @@ function prng(seed: number): () => number {
 }
 
 describe("CP0 exception status stack", () => {
+  test("delay-slot state is cleared after the slot and preserved for exceptions", () => {
+    const cpu = boot();
+    cpu.mem.store32(0, 0x0800_0004);
+    cpu.mem.store32(4, ADDIU(1, 0, 1));
+    cpu.step();
+    expect(cpu.inBranchDelay).toBe(true);
+    cpu.exception(0, 0);
+    expect(cpu.cp0[14]).toBe(0);
+    expect((cpu.cp0[13]! & 0x8000_0000) >>> 0).toBe(0x8000_0000);
+    cpu.reset(0);
+    cpu.step();
+    cpu.step();
+    expect(cpu.inBranchDelay).toBe(false);
+    expect(cpu.r[1]).toBe(1);
+  });
+
   test("entry and RFE preserve all four stacked status bits", () => {
     const cpu = boot({ addr: 0, words: [0x4200_0010] });
     cpu.cp0[12] = 0x105;

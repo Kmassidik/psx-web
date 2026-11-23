@@ -23,6 +23,7 @@ export class Cpu {
   nextPc = 0xbfc0_0004;
   readonly cp0 = new Uint32Array(16);
   inBranchDelay = false;
+  private executingDelaySlot = false;
   loadDelay = { slot: 0, reg: 0, value: 0 }; // one pending load, PS1 has 1 slot
   cycles = 0;
   private readonly dyn = new Dynarec();
@@ -70,6 +71,7 @@ export class Cpu {
     this.pc = entry;
     this.nextPc = (entry + 4) | 0;
     this.inBranchDelay = false;
+    this.executingDelaySlot = false;
     this.loadDelay.slot = 0;
     this.cycles = 0;
     this.dyn.flush();
@@ -116,6 +118,17 @@ export class Cpu {
   }
 
   step(): boolean {
+    const delaySlot = this.inBranchDelay;
+    this.inBranchDelay = false;
+    this.executingDelaySlot = delaySlot;
+    try {
+      return this.stepInternal();
+    } finally {
+      this.executingDelaySlot = false;
+    }
+  }
+
+  private stepInternal(): boolean {
     // Load-delay: value from the *previous* instruction lands this cycle.
     if (this.loadDelay.slot) {
       const { reg, value } = this.loadDelay;
@@ -479,11 +492,12 @@ export class Cpu {
    */
   exception(code: number, _info: number): void {
     const sr = this.cp0[12]!;
-    this.cp0[13] = ((code << 2) | (_info & 0xff00) | (this.inBranchDelay ? (1 << 31) : 0)) >>> 0; // CAUSE
+    const delaySlot = this.executingDelaySlot || this.inBranchDelay;
+    this.cp0[13] = ((code << 2) | (_info & 0xff00) | (delaySlot ? (1 << 31) : 0)) >>> 0; // CAUSE
     this.cp0[12] = ((sr & ~0x3f) | ((sr << 2) & 0x3f)) >>> 0;
     // If a handler exists at the vector, deliver the exception; otherwise
     // emulate the BIOS default outcome: return past the faulting instruction.
-    const epc = (this.pc - (this.inBranchDelay ? 4 : 0) + (code === 10 ? 4 : 0)) >>> 0;
+    const epc = (this.pc - (delaySlot ? 4 : 0) + (code === 10 ? 4 : 0)) >>> 0;
     this.cp0[14] = epc;
     if (this.mem.load32(0x8000_0080) !== 0) {
       this.pc = 0x8000_0080;

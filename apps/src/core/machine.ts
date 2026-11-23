@@ -247,6 +247,8 @@ export class Machine {
     const loadDelay = { ...this.cpu.loadDelay };
     this.cpu.cp0[13] = 0x400;
     this.cpu.cp0[14] = pc;
+    const sr = this.cpu.cp0[12]!;
+    this.cpu.cp0[12] = ((sr & ~0x3f) | ((sr << 2) & 0x3f)) >>> 0;
     this.cpu.r[2] = kind === "exception" ? 1 : 0; // only exception hooks require v0 = 1
     this.cpu.pc = entry;
     this.cpu.nextPc = (entry + 4) | 0;
