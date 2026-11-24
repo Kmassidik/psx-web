@@ -51,7 +51,7 @@ describe("BIOS-free kernel services", () => {
     const m = new Machine();
     m.installHleVectors();
     const table = call(m, 0xb0, 0x57);
-    expect(table).toBe(0x8000_1000 | 0);
+    expect(table).toBe(0x8000_0874 | 0); // canonical B-table (SCPH1001)
     const openEvent = m.mem.load32(table + 0x08 * 4);
     m.cpu.reset(openEvent);
     m.cpu.r[4] = 0xf000_0009;
