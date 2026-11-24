@@ -34,6 +34,18 @@ export class BiosKernel {
   private padDest = 0;
   /** Event descriptor the guest registered for card-liveness checks (B_InitCARD). */
   private padCardEvent = 0;
+  callLabels: string[] = [];
+  openNames = new Set<string>();
+  /**
+   * BIOS pad work area (SCPH1001 layout, see knowledge-base/HLE-BIOS-REFERENCE.md).
+   * InitPAD(B/12)+StartPAD(B/13) set these; the vblank hook fills the read
+   * buffers and copies button data to padDest each frame — the exact
+   * service PCSX-ReARMed's psxbios.c provides (A_PAD_* family).
+   */
+  private padIrqEnabled = false; // A_PAD_IRQR_ENA (0x74b8)
+  private padReadBuffers = [0, 0]; // A_PAD_INBUF: guest buffer addrs for pad1/pad2
+  private padReadLens = [0, 0]; // A_PAD_IN_LEN
+  private padDriverDst = 0; // A_PAD_DR_DST — game's 4-byte button output
   private customExit = 0;
   private returnFromException = false;
   private sectorProvider?: SectorProvider;
@@ -48,8 +60,16 @@ export class BiosKernel {
     private readonly pads: { pad1: number; pad2: number },
     private readonly joypad?: { consumeInterrupt(): void },
   ) {
-    this.installTable(0xb0, 0x1000, 0x1400);
-    this.installTable(0xc0, 0x2000, 0x2400);
+    // Canonical kernel tables (SCPH1001 layout): A fn ptrs at 0x0200,
+    // B at 0x0874, C at 0x0674 — games read entries from these fixed
+    // addresses (ReARMed A_A0_TABLE/A_B0_TABLE/A_C0_TABLE). Each entry
+    // points at a per-fn stub that sets $t1=fn and jumps to the HLE vector.
+    // Entry counts per SCPH1001 layout: A spans 0x200..0x674 (173), B
+    // 0x874..0xb74 (160), C 0x674..0x874 (128) — the C region ends where B
+    // begins, so overflowing C's 256 default would clobber B entries.
+    this.installTable(0xa0, 0x0200, 0x3000, 173);
+    this.installTable(0xb0, 0x0874, 0x4000, 160);
+    this.installTable(0xc0, 0x0674, 0x5000, 128);
     // BIOS-internal CDROM events: acknowledge, complete, data ready, end, error.
     for (const spec of [0x10, 0x20, 0x40, 0x80, 0x8000]) {
       this.events.push({
@@ -64,8 +84,8 @@ export class BiosKernel {
     }
   }
 
-  private installTable(vector: number, table: number, stubs: number): void {
-    for (let fn = 0; fn < 256; fn++) {
+  private installTable(vector: number, table: number, stubs: number, count: number): void {
+    for (let fn = 0; fn < count; fn++) {
       const stub = stubs + fn * 12;
       this.cpu.mem.store32(table + fn * 4, 0x8000_0000 | stub);
       this.cpu.mem.store32(stub, 0x2409_0000 | fn); // ADDIU t1, zero, fn
@@ -129,11 +149,68 @@ export class BiosKernel {
   updatePads(): number {
     const buttons = ((this.pads.pad2 << 16) | this.pads.pad1) | 0;
     if (this.padDest !== 0) this.cpu.mem.store32(this.padDest, buttons);
+    // ReARMed hleExcPadCard1: on each vblank, if pad reads are enabled fill
+    // the guest read buffers with raw controller frames, then refresh the
+    // game's button destination (PAD_dr semantics).
+    if (this.padIrqEnabled) {
+      this.fillPadReadBuffers(buttons);
+      if (this.padDriverDst !== 0) this.padDrCopy();
+    }
     // PadCard setup: the BIOS card-liveness event is level-delivered on every
     // frame while a slot holds a card (real BIOS: card detection task per
     // frame). Callers that wait on it make progress without card I/O.
     if (this.padCardEvent !== 0) this.deliver(0xf000_0011, 0x20);
     return buttons;
+  }
+
+  /**
+   * Fill the InitPAD read buffers with a raw digital-pad frame
+   * (ReARMed PADpoll output shape): [status=0x00? id=0x41, 5A, buttons...].
+   * Buffer layout per pad: byte0=0x01 (device flags in ReARMed is buf[0]==0
+   * check for "data valid"), byte1=0x41 (digital id), byte2/3 = button bytes
+   * active-low, remaining bytes 0xFF.
+   */
+  private fillPadReadBuffers(buttons: number): void {
+    const mem = this.cpu.mem;
+    const pad1 = buttons & 0xffff;
+    const pad2 = (buttons >>> 16) & 0xffff;
+    const frames = [pad1, pad2];
+    for (let pad = 0; pad < 2; pad++) {
+      const base = this.padReadBuffers[pad]!;
+      const len = this.padReadLens[pad] ?? 0x22;
+      if (base === 0 || len < 4) continue;
+      const f = frames[pad]!;
+      mem.store8(base + 0, 0x00); // valid marker (ReARMed checks buf[0]==0)
+      mem.store8(base + 1, 0x41); // digital pad id
+      mem.store8(base + 2, (f & 0xff) ^ 0xff); // active-low swizzle
+      mem.store8(base + 3, ((f >>> 8) & 0xff) ^ 0xff);
+      for (let i = 4; i < len; i++) mem.store8(base + i, 0xff);
+    }
+  }
+
+  /**
+   * PAD_dr (ReARMed psxBios_PAD_dr_): decode the read buffers into the game's
+   * 4-byte destination. Only decodes when pad data is valid; otherwise
+   * destination fills with ~0 (no pad).
+   */
+  private padDrCopy(): number {
+    const mem = this.cpu.mem;
+    if (this.padDriverDst === 0) return 0;
+    const out: number[] = [0xff, 0xff, 0xff, 0xff];
+    for (let pad = 0; pad < 2; pad++) {
+      const buf = this.padReadBuffers[pad]!;
+      if (buf === 0) continue;
+      const valid = mem.load8(buf) === 0;
+      const id = mem.load8(buf + 1);
+      if (valid && (id === 0x23 || id === 0x41)) {
+        out[pad * 2 + 0] = mem.load8(buf + 3) ^ 0xff; // back to active-high bits
+        out[pad * 2 + 1] = mem.load8(buf + 2) ^ 0xff;
+      }
+    }
+    const word =
+      ((out[0]! & 0xff) | ((out[1]! & 0xff) << 8) | ((out[2]! & 0xff) << 16) | ((out[3]! & 0xff) << 24)) | 0;
+    this.cpu.mem.store32(this.padDriverDst, word);
+    return 1;
   }
 
 
@@ -181,6 +258,7 @@ export class BiosKernel {
   }
 
   private cCall(fn: number): number {
+    this.callLabels.push(`C/${fn.toString(16)}`);
     if (fn === 0x08 || fn === 0x09) return 0;
     if (fn === 0x0a) { // ChangeClearRCnt(t, clear)
       const timer = this.cpu.r[4]!;
@@ -244,7 +322,11 @@ export class BiosKernel {
   }
 
   private aCall(fn: number): number {
+    this.callLabels.push(`A/${fn.toString(16)}`);
+    if (fn === 0) { let s2 = ''; const base = this.cpu.r[4] ?? 0; for (let i = 0; i < 32; i++) { const c = this.cpu.mem.load8(base + i); if (!c) break; s2 += String.fromCharCode(c); } this.openNames.add(s2); }
     switch (fn) {
+      case 0x00: // open(filename, accessmode): no filesystem — ReARMed returns
+        return -1; // -1 unless "bu00"/"bu10" card device; fixes 17k open polls
       case 0x33: { // malloc(size)
         const size = this.cpu.r[4]!;
         if (this.state.heapNext === 0 || size <= 0) return 0;
@@ -296,6 +378,7 @@ export class BiosKernel {
   }
 
   private bCall(fn: number): number {
+    this.callLabels.push(`B/${fn.toString(16)}`);
     const handle = this.cpu.r[4]!;
     switch (fn) {
       case 0x00: { // alloc_kernel_memory(size): bounded A000E000h..A000FFFFh control blocks
@@ -400,6 +483,40 @@ export class BiosKernel {
       }
       case 0x32: // FileOpen — full filesystem delivery is not implemented
         return 0xdead_0001;
+      case 0x12: { // InitPAD(buf1, len1, buf2, len2) — ReARMed psxBios_InitPAD
+        this.padReadBuffers = [this.cpu.r[4]!, this.cpu.r[6]!];
+        this.padReadLens = [this.cpu.r[5]!, this.cpu.r[7]!];
+        const mem = this.cpu.mem;
+        for (let i = 0; i < this.padReadLens[0]!; i++) mem.store8(this.padReadBuffers[0]! + i, 0);
+        for (let i = 0; i < this.padReadLens[1]!; i++) mem.store8(this.padReadBuffers[1]! + i, 0);
+        return 1;
+      }
+      case 0x13: { // StartPAD — enable pad reads + vblank IRQ line (ReARMed)
+        this.padIrqEnabled = true;
+        const mask = this.cpu.ports.read32(0x1f80_1074) ?? 0;
+        this.cpu.ports.write32(0x1f80_1074, mask | 1, 32);
+        const sr = this.cpu.cp0[12]!;
+        this.cpu.cp0[12] = (sr | 0x401) >>> 0;
+        return 1;
+      }
+      case 0x14: // StopPAD
+        this.padIrqEnabled = false;
+        return 0;
+      case 0x15: { // PAD_init(0x20000000|1, dst) — InitPAD+StartPAD into kernel bufs
+        const type = this.cpu.r[4]!;
+        if (type === 0x2000_0000 || type === 0x2000_0001) {
+          this.padDriverDst = this.cpu.r[5]!;
+          this.padReadBuffers = [0x7570, 0x7598]; // A_PAD_DR_BUF1/2 (kernel area)
+          this.padReadLens = [0x22, 0x22];
+          this.padIrqEnabled = true;
+          this.updatePads();
+          return 2;
+        }
+        return 0;
+      }
+      case 0x16: // PAD_dr(): refresh the game's button destination
+        this.padDrCopy();
+        return this.updatePads();
       case 0x35: { // write(fd, buf, count) — no$psx: A(03h) or B(35h) FileWrite
         const fd = this.cpu.r[4]!;
         const count = this.cpu.r[6]!;
@@ -431,9 +548,9 @@ export class BiosKernel {
         return 0;
       }
       case 0x56: // GetC0Table
-        return 0x8000_2000;
+        return 0x8000_0674;
       case 0x57: // GetB0Table
-        return 0x8000_1000;
+        return 0x8000_0874;
       default:
         return 0;
     }
