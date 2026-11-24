@@ -382,6 +382,16 @@ export class Joypad {
     if (this.ackPulse === 0) this.ack = false;
   }
 
+  /** BIOS-default SIO service: consume the /ACK interrupt latch (INTRST
+   * semantics) without resetting MODE/BAUD or dropping buffered RX bytes.
+   * Real BIOS ISRs leave JOY_STAT idle (ACK/IRQ clear) once they have
+   * serviced line 7; mirrors that so guest probers see an idle bus. */
+  consumeInterrupt(): void {
+    this.ack = this.irq = false;
+    this.ackDelay = this.ackPulse = 0;
+    this.ackIrqPending = false;
+  }
+
   private receive(value: number): void {
     if (this.rx.length === 8) this.rx[7] = value;
     else this.rx.push(value);

@@ -28,6 +28,8 @@ export class BiosKernel {
   private readonly kernelAllocations = new Map<number, number>();
   private readonly events: BiosEvent[] = [];
   private readonly interruptHandlers: InterruptHandler[] = [];
+  /** ExCB whose SECOND function consumes SIO completion (registered via C(02h)). */
+  private sioCompletionExcb = 0;
   private readonly pendingCallbacks: number[] = [];
   private padDest = 0;
   /** Event descriptor the guest registered for card-liveness checks (B_InitCARD). */
@@ -44,6 +46,7 @@ export class BiosKernel {
     private readonly cpu: Cpu,
     private readonly gpu: { writeGP0(w: number): void },
     private readonly pads: { pad1: number; pad2: number },
+    private readonly joypad?: { consumeInterrupt(): void },
   ) {
     this.installTable(0xb0, 0x1000, 0x1400);
     this.installTable(0xc0, 0x2000, 0x2400);
@@ -148,6 +151,35 @@ export class BiosKernel {
     return this.pendingCallbacks.splice(0);
   }
 
+  /** True when a guest ExCB claimed SIO completion (C(02h) registered). */
+  get sioHandlerRegistered(): boolean {
+    return this.sioCompletionExcb !== 0;
+  }
+
+  /**
+   * BIOS-default SIO0 service, run while no guest ExCB claims line 7 yet
+   * (mirrors the real BIOS's RAM-resident dispatcher handing off to user
+   * chains once registered). Advances the SIO0 state machine: completes any
+   * in-flight controller/card transaction and delivers the pad/card events
+   * guest drivers poll for. Uses existing SIO APIs only — no guest RAM writes.
+   * Returns true when it consumed the ACK.
+   */
+  runDefaultSioService(): boolean {
+    this.cpu.ports.write32(0x1f80_1070, ~(1 << 7), 32); // dismiss the ACK
+    // BIOS ISR parity: the RAM-resident dispatcher fully consumes the /ACK
+    // handshake once it has serviced line 7, leaving JOY_STAT idle
+    // (ACK/IRQ clear). Without this, guest code probing the bus for a
+    // BIOS-resident service mistakes the latched flags for an in-flight
+    // transfer and skips its own init (differential boot evidence).
+    this.joypad?.consumeInterrupt();
+    // The SIO0 state machine itself advances through joypad.tick in the
+    // machine slice loop; the BIOS default service delivers the pad state
+    // (updates the OutdatedPadInitAndStart buffer) which is what guest
+    // drivers poll for before their own handler takes over.
+    this.updatePads();
+    return true;
+  }
+
   private cCall(fn: number): number {
     if (fn === 0x08 || fn === 0x09) return 0;
     if (fn === 0x0a) { // ChangeClearRCnt(t, clear)
@@ -159,17 +191,22 @@ export class BiosKernel {
       return 0;
     }
     if (fn === 0x02) {
+      const struc = this.cpu.r[5]!;
       this.interruptHandlers.unshift({
         priority: this.cpu.r[4]!,
-        struc: this.cpu.r[5]!,
-        first: this.cpu.mem.load32(this.cpu.r[5]! + 8),
+        struc,
+        first: this.cpu.mem.load32(struc + 8),
       });
+      // C(02h) delivers SIO0 completion (I_STAT line 7) to the newest ExCB;
+      // the kernel default card/pad service yields once a chain claims it.
+      this.sioCompletionExcb = struc;
       return 0;
     }
     if (fn === 0x03) {
       const index = this.interruptHandlers.findIndex((handler) => handler.struc === this.cpu.r[5]!);
       if (index < 0) return 0;
       this.interruptHandlers.splice(index, 1);
+      if (this.cpu.r[5]! === this.sioCompletionExcb) this.sioCompletionExcb = 0;
       return this.cpu.r[5]!;
     }
     return 0;

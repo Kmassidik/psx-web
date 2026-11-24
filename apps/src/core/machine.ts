@@ -4,6 +4,7 @@ export const IRQ_DMA = 1 << 3; // line 3 (DMA finish)
 export const IRQ_TIMERS = 1 << 4 | 1 << 5 | 1 << 6; // lines 4,5,6 (rcnt 0,1,2)
 export const IRQ_SPU = 1 << 9; // line 9
 export const IRQ_VBLANK = 1 << 0; // line 0
+export const IRQ_SIO = 1 << 7; // line 7 (SIO0 controller/memory-card ACK)
 
 /**
  * Machine = Memory + CPU + Gpu + Rcnt + minimal DMA/IRQ wired as MMIO ports.
@@ -48,7 +49,8 @@ export class Machine {
   readonly pads = { pad1: 0xffff, pad2: 0xffff };
   readonly joypad = new Joypad(this.pads);
   readonly cpu: Cpu;
-  private readonly kernel: BiosKernel;
+  /** BIOS kernel services (HLE). Public for the SIO default-service dispatch. */
+  readonly kernel: BiosKernel;
   /** 7-channel DMA controller (ch0 MDECin … ch6 OTC), DmaUnit delivery. */
   readonly dma = new Dma();
   /** CDROM controller (1F801800 + IRQ line 2). */
@@ -87,7 +89,7 @@ export class Machine {
       read32: (va) => this.portRead(va),
       write32: (va, v, width) => this.portWrite(va, v, width),
     }, (table, fn) => this.kernel.call(table, fn));
-    this.kernel = new BiosKernel(this.cpu, this.gpu, this.pads);
+    this.kernel = new BiosKernel(this.cpu, this.gpu, this.pads, this.joypad);
     this.dma.onComplete = (channel) => {
       if (channel === 4) this.kernel.deliver(0xf000_0009, 0x20);
     };
@@ -254,18 +256,22 @@ export class Machine {
     this.runHandler(this.kernel.interruptHandler(1), "vblank");
   }
 
-  /** Execute ExCB chains in priority order. Each FIRST function may request its
-   * SECOND function by returning nonzero; ReturnFromException skips all lower
-   * priority handlers and the custom exception hook. */
-  private runInterruptChain(priority = 2): boolean {
+  /** Execute ExCB chains in priority order. All registered priorities run
+   * after each interrupt entry (no$psx dispatches every enabled line, first
+   * device priority wins only for shared lines); each FIRST function may
+   * request its SECOND function by returning nonzero; ReturnFromException
+   * skips lower priorities and the custom exception hook. */
+  private runInterruptChain(): boolean {
     const entries = this.kernel.interruptEntries();
     for (const entry of entries) {
-      if (entry.priority !== priority) continue;
-      const first = this.mem.load32(entry.struc + 8);
+      // ExCB layout {next, verifier/FIRST, handler/SECOND}: the FIRST function
+      // gates the chain and may request its SECOND function by returning
+      // nonzero (no$psx interrupt delivery; ePSXe psxRcntUpdate/CdromIrq).
+      const first = this.mem.load32(entry.struc + 4);
       if (first === 0) continue;
       const result = this.runHandler(first);
       if (this.handlerReturnedFromException) return false;
-      const second = this.mem.load32(entry.struc + 4);
+      const second = this.mem.load32(entry.struc + 8);
       if (result !== 0 && second !== 0) {
         this.runHandler(second);
         if (this.handlerReturnedFromException) return false;
@@ -373,6 +379,8 @@ export class Machine {
   }
 
   private vblankAcc = 0;
+  /** Guard so one pending SIO ACK dispatches its chain once per raise. */
+  private irqAckLatch = 0;
   private spuDmaDone = false; // retained in the versioned save-state layout
   private audioSink: SpuAudioSink | null = null;
   private audioLeft = new Float32Array(0);
@@ -395,6 +403,27 @@ export class Machine {
     if (deliverException) {
       this.runInterruptChain();
       this.runHandler(this.kernel.exceptionHook(), "exception");
+    } else if (this.irqRequested() && this.irqStatus & IRQ_VBLANK) {
+      // Legacy VBlank fast path kept for boots that never enter exceptions.
+      this.runVblankHandler();
+    }
+    // Device lines (SIO/pad line 7 among them) dispatch through the same
+    // chain walk whenever any enabled line is pending, matching no$psx: every
+    // pending line runs its ExCB after each interrupt entry, not only VBlank.
+    // The ExCB verifier/handler pair itself decides relevance per line.
+    // BIOS-default SIO service: while no guest ExCB claims line 7 completion,
+    // the kernel runs the pad/card service itself (the real BIOS's RAM-resident
+    // dispatcher does this until handing off to registered user chains).
+    if (!deliverException && this.irqRequested() && (this.cpu.cp0[12]! & 0x401) === 0x401 && this.irqAckLatch === 0) {
+      if ((this.irqStatus & IRQ_SIO) !== 0 && !this.kernel.sioHandlerRegistered) {
+        this.irqAckLatch = 1;
+        this.kernel.runDefaultSioService();
+        this.irqAckLatch = 0;
+      } else {
+        this.irqAckLatch = 1;
+        this.runInterruptChain();
+        this.irqAckLatch = 0;
+      }
     }
     this.runDma();
     this.runEventCallbacks();
