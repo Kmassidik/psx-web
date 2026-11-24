@@ -1,0 +1,1096 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>psx-web — Building a PlayStation in a Browser Tab</title>
+<style>
+/**
+ * psx-web build book — Medium-style single-file knowledge book.
+ * Pure HTML/CSS: no frameworks, no JS except the tiny scrollspy.
+ */
+:root {
+  --ink: #1a1a1a;
+  --ink-soft: #4b4b4b;
+  --ink-faint: #9b9b9b;
+  --paper: #ffffff;
+  --wash: #f7f7f5;
+  --line: #e6e6e3;
+  --accent: #a83a2c;
+  --accent-wash: #faf1ef;
+  --code-bg: #f4f3ef;
+  --mono: ui-monospace, "SF Mono", "Cascadia Code", Menlo, Consolas, monospace;
+}
+
+* { box-sizing: border-box; }
+
+html { scroll-behavior: smooth; }
+
+body {
+  margin: 0;
+  background: var(--paper);
+  color: var(--ink);
+  font-family: Georgia, "Iowan Old Style", "Times New Roman", serif;
+  font-size: 19px;
+  line-height: 1.68;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* ---------- Sidebar ---------- */
+.sidebar {
+  position: fixed;
+  top: 0; left: 0; bottom: 0;
+  width: 250px;
+  border-right: 1px solid var(--line);
+  background: var(--wash);
+  overflow-y: auto;
+  padding: 34px 0 48px;
+}
+
+.sidebar .brand {
+  font-family: var(--mono);
+  font-size: 12px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--ink-faint);
+  padding: 0 26px;
+  margin-bottom: 4px;
+}
+
+.sidebar .brand strong {
+  display: block;
+  font-family: Georgia, serif;
+  font-size: 20px;
+  font-weight: 700;
+  letter-spacing: 0;
+  text-transform: none;
+  color: var(--ink);
+  margin: 6px 0 2px;
+}
+
+.sidebar .brand .sub {
+  font-family: Georgia, serif;
+  font-size: 12.5px;
+  letter-spacing: 0;
+  text-transform: none;
+  color: var(--ink-faint);
+}
+
+.sidebar nav { margin-top: 18px; }
+
+.sidebar nav a {
+  display: block;
+  padding: 7px 26px;
+  font-family: var(--mono);
+  font-size: 12.5px;
+  line-height: 1.45;
+  color: var(--ink-soft);
+  text-decoration: none;
+  border-left: 2px solid transparent;
+}
+
+.sidebar nav a:hover { color: var(--ink); background: #efefec; }
+
+.sidebar nav a.active {
+  color: var(--accent);
+  border-left-color: var(--accent);
+  background: var(--accent-wash);
+}
+
+.sidebar nav a .n { color: var(--ink-faint); margin-right: 7px; }
+.sidebar nav a.active .n { color: var(--accent); }
+
+.sidebar .legend {
+  margin: 22px 26px 0;
+  padding-top: 14px;
+  border-top: 1px solid var(--line);
+  font-family: var(--mono);
+  font-size: 10.5px;
+  color: var(--ink-faint);
+  line-height: 1.7;
+}
+
+/* ---------- Main column ---------- */
+.content {
+  margin-left: 250px;
+  padding: 0 24px 140px;
+}
+
+article {
+  max-width: 680px;
+  margin: 0 auto;
+}
+
+/* ---------- Hero ---------- */
+.hero { padding: 96px 0 8px; }
+
+.hero .kicker {
+  font-family: var(--mono);
+  font-size: 12px;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--accent);
+  margin-bottom: 18px;
+}
+
+.hero h1 {
+  font-size: 44px;
+  line-height: 1.16;
+  font-weight: 700;
+  margin: 0 0 20px;
+  letter-spacing: -0.01em;
+}
+
+.hero .dek {
+  font-size: 21px;
+  line-height: 1.55;
+  color: var(--ink-soft);
+  margin: 0 0 26px;
+}
+
+.hero .byline {
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--ink-faint);
+  padding-bottom: 34px;
+  border-bottom: 1px solid var(--line);
+}
+
+/* ---------- Chapters ---------- */
+.chapter { padding-top: 92px; }
+
+h2 {
+  font-size: 31px;
+  line-height: 1.22;
+  font-weight: 700;
+  margin: 0 0 8px;
+  letter-spacing: -0.01em;
+}
+
+h2 .chnum {
+  display: block;
+  font-family: var(--mono);
+  font-size: 12px;
+  font-weight: 400;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--accent);
+  margin-bottom: 12px;
+}
+
+h3 {
+  font-family: var(--mono);
+  font-size: 15px;
+  font-weight: 600;
+  margin: 44px 0 6px;
+  color: var(--ink);
+}
+
+.chapter hr.rule {
+  border: 0;
+  border-top: 1px solid var(--line);
+  margin: 26px 0 34px;
+}
+
+p { margin: 0 0 24px; }
+
+strong { font-weight: 700; }
+em { font-style: italic; }
+
+a { color: var(--accent); text-decoration: none; border-bottom: 1px solid rgba(168, 58, 44, 0.35); }
+a:hover { border-bottom-color: var(--accent); }
+
+code {
+  font-family: var(--mono);
+  font-size: 0.78em;
+  background: var(--code-bg);
+  border: 1px solid var(--line);
+  border-radius: 3px;
+  padding: 1px 5px;
+  color: var(--ink);
+  white-space: nowrap;
+}
+
+/* ---------- Callouts ---------- */
+.callout {
+  margin: 30px 0;
+  padding: 20px 24px;
+  background: var(--accent-wash);
+  border-left: 3px solid var(--accent);
+  font-size: 17.5px;
+  line-height: 1.6;
+}
+
+.callout p { margin: 0 0 12px; }
+.callout p:last-child { margin-bottom: 0; }
+.callout .tag {
+  display: block;
+  font-family: var(--mono);
+  font-size: 11px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--accent);
+  margin-bottom: 10px;
+}
+
+.callout.gray { background: var(--wash); border-left-color: var(--ink-faint); }
+.callout.gray .tag { color: var(--ink-soft); }
+
+/* ---------- Tables ---------- */
+.tblwrap { overflow-x: auto; margin: 30px 0 34px; }
+
+table {
+  border-collapse: collapse;
+  width: 100%;
+  font-size: 15px;
+  line-height: 1.5;
+}
+
+th {
+  font-family: var(--mono);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  text-align: left;
+  color: var(--ink-faint);
+  border-bottom: 2px solid var(--ink);
+  padding: 8px 14px 8px 0;
+}
+
+td {
+  border-bottom: 1px solid var(--line);
+  padding: 9px 14px 9px 0;
+  vertical-align: top;
+}
+
+td:first-child { white-space: nowrap; }
+
+td code, th code { white-space: normal; }
+
+/* ---------- Code blocks ---------- */
+pre {
+  background: var(--code-bg);
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  padding: 18px 20px;
+  overflow-x: auto;
+  margin: 26px 0 32px;
+}
+
+pre code {
+  background: none;
+  border: none;
+  padding: 0;
+  font-size: 13.5px;
+  line-height: 1.62;
+  white-space: pre;
+  color: var(--ink);
+}
+
+/* ---------- Lists ---------- */
+ul, ol { margin: 0 0 26px; padding-left: 26px; }
+li { margin-bottom: 9px; }
+
+/* ---------- Footnotes / refs ---------- */
+.refs {
+  margin: 20px 0 0;
+  padding: 18px 22px;
+  background: var(--wash);
+  border: 1px solid var(--line);
+  font-size: 14.5px;
+  line-height: 1.55;
+  color: var(--ink-soft);
+}
+
+.refs .tag {
+  display: block;
+  font-family: var(--mono);
+  font-size: 11px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--ink-faint);
+  margin-bottom: 10px;
+}
+
+.refs ul { margin-bottom: 0; }
+.refs li { margin-bottom: 6px; }
+.refs code { font-size: 0.82em; }
+
+.unv {
+  font-family: var(--mono);
+  font-size: 0.72em;
+  color: var(--ink-faint);
+  white-space: nowrap;
+}
+
+/* ---------- End mark ---------- */
+.endmark {
+  margin-top: 100px;
+  text-align: center;
+  font-family: var(--mono);
+  font-size: 12px;
+  letter-spacing: 0.3em;
+  color: var(--ink-faint);
+}
+
+/* ---------- Responsive ---------- */
+@media (max-width: 1080px) {
+  .sidebar {
+    position: static;
+    width: auto;
+    border-right: none;
+    border-bottom: 1px solid var(--line);
+    padding: 24px 22px;
+  }
+  .sidebar nav a { display: inline-block; padding: 4px 12px 4px 0; border-left: none; }
+  .sidebar nav a.active { background: none; }
+  .sidebar nav a .n { display: none; }
+  .sidebar .legend { display: none; }
+  .content { margin-left: 0; padding: 0 22px 90px; }
+  .hero { padding-top: 56px; }
+  body { font-size: 18px; }
+  .hero h1 { font-size: 34px; }
+  h2 { font-size: 26px; }
+}
+  </style>
+</head>
+<body>
+  <aside class="sidebar" id="sidebar">
+    <div class="brand">
+      Build log
+      <strong>psx-web</strong>
+      <span class="sub">a PS1 emulator in the browser</span>
+    </div>
+    <nav id="toc">
+      <a href="#c0"><span class="n">00</span>Prologue</a>
+      <a href="#c1"><span class="n">01</span>The decision to start</a>
+      <a href="#c2"><span class="n">02</span>What we built</a>
+      <a href="#c3"><span class="n">03</span>Two days, 96 commits</a>
+      <a href="#c4"><span class="n">04</span>Bugs that taught us the hardware</a>
+      <a href="#c5"><span class="n">05</span>The CPU in detail</a>
+      <a href="#c6"><span class="n">06</span>The GPU and the software rasterizer</a>
+      <a href="#c7"><span class="n">07</span>Rendering bottlenecks</a>
+      <a href="#c8"><span class="n">08</span>The GTE, explained</a>
+      <a href="#c9"><span class="n">09</span>GTE: the pipeline, cycle by cycle</a>
+      <a href="#c10"><span class="n">10</span>GTE: the command families</a>
+      <a href="#c11"><span class="n">11</span>GTE: what breaks when it's wrong</a>
+      <a href="#c12"><span class="n">12</span>GTE: remaining work</a>
+      <a href="#c13"><span class="n">13</span>Sound, disc, and the frozen decade</a>
+      <a href="#c14"><span class="n">14</span>Why HLE instead of a BIOS</a>
+      <a href="#c15"><span class="n">15</span>Workers and the cycle budget</a>
+      <a href="#c16"><span class="n">16</span>Devices, priorities, interrupts</a>
+      <a href="#c17"><span class="n">17</span>Save states</a>
+      <a href="#c18"><span class="n">18</span>The dynarec detour</a>
+      <a href="#c19"><span class="n">19</span>Where this goes next</a>
+      <a href="#c20"><span class="n">20</span>Colophon</a>
+    </nav>
+    <div class="legend">
+      Verified = checked against a<br>
+      test, fixture, or live browser<br>
+      run. UNVERIFIED = behavior<br>
+      marked in code where our<br>
+      model of the hardware is a<br>
+      guess we haven't confirmed.
+    </div>
+  </aside>
+
+  <main class="content">
+    <article>
+
+      <!-- ============ HERO ============ -->
+      <header class="hero" id="top">
+        <div class="kicker">A two-day build log · November 22–24, 2026</div>
+        <h1>Building a PlayStation in a Browser Tab</h1>
+        <p class="dek">Two days, ninety-six commits, 407 tests, and one commercial racing game reaching its mission screen inside a web page. This is the complete story of <code>psx-web</code>: what we built, every bug that humbled us, why the GTE is the heart of the remaining work, and the architecture decisions that got us here.</p>
+        <div class="byline">Written from the source tree at <code>apps/src/core/</code> · knowledge base in <code>knowledge-base/</code> · 0 copied lines of emulator code</div>
+      </header>
+
+      <!-- ============ CH 0 ============ -->
+      <section class="chapter" id="c0">
+        <h2><span class="chnum">Chapter 00 · Prologue</span>What a PlayStation Actually Is</h2>
+        <hr class="rule">
+        <p>Before anything else, it helps to say plainly what we were building. A PlayStation 1 is not one chip. It is a small 1994 computer with five subsystems that all have to lie about time in the same way at the same instant:</p>
+        <ul>
+          <li>a <strong>CPU</strong> — a MIPS R3000A at ~33.87 MHz, with a quirk no modern chip has: <em>every load takes effect one instruction late</em>, and every branch executes the instruction after it before jumping;</li>
+          <li>a <strong>GTE</strong> — the Geometry Transformation Engine, coprocessor 2. A fixed-point vector math machine that turns 3D coordinates into screen coordinates and lit colors. The CPU has almost no useful floating point, so the GTE <em>is</em> the 3D pipeline;</li>
+          <li>a <strong>GPU</strong> — no 3D hardware at all. The GTE hands it flat 2D polygons and it rasterizes them, with affine texture warping and a 1024×512 halfword frame buffer called VRAM;</li>
+          <li>a <strong>CDROM controller, MDEC, SPU</strong> — the drive, the FMV/JPEG-style macroblock decoder, and the 24-voice sound chip;</li>
+          <li>and the glue: <strong>DMA</strong> (7 channels), an <strong>interrupt controller</strong>, three <strong>timers</strong>, two serial ports for <strong>pads and memory cards</strong>.</li>
+        </ul>
+        <p>Our project constraint was unusual and, it turned out, clarifying: <strong>the browser is the engine</strong>. There is no server-side emulation, nothing to install. A visitor drops in their own BIOS dump or disc image and their own CPU does the work. That single constraint shaped everything — the language (TypeScript compiled by Bun, a React shell, a Web Worker for the emulation core), the memory discipline (preallocated typed arrays, no per-frame allocation), and the legal posture (we never ship a BIOS or a game).</p>
+        <div class="callout gray">
+          <span class="tag">The rule that disciplined the whole build</span>
+          <p>A task is complete only when its observable acceptance criteria are met. A loading bar, a title screen, and playable gameplay are separate milestones and must not be conflated.</p>
+        </div>
+      </section>
+
+      <!-- ============ CH 1 ============ -->
+      <section class="chapter" id="c1">
+        <h2><span class="chnum">Chapter 01 · The decision to start</span>Learning From a Shipped Binary</h2>
+        <hr class="rule">
+        <p>We did not copy another emulator. We did read one, in the most literal sense: ePSXe 2.0.5 for Linux x64, a stripped ELF binary, taken apart in Ghidra. Two thousand five hundred and forty-nine functions recovered, mapped into <code>knowledge-base/BINARY-RE-MAP.md</code>. Not to lift code — the license forbids it and the architecture wouldn't match anyway — but to recover <em>specifications</em>: the shape of the CDROM command handlers (<code>CdromIoIrqFunc1/2</code>), the byte-exact semantics of <code>LWL/LWR</code> unaligned loads, the UNR division algorithm the GTE uses, the memory layout of a working emulator.</p>
+        <p>That last one matters more than it sounds. The reference binary holds about 20.7 MiB in fixed <code>.bss</code> globals — every piece of emulator state in flat, preallocated arrays. We mirrored that discipline: all emulation state lives in a handful of typed arrays allocated once, because a garbage collector pausing mid-frame is a dropped frame.</p>
+        <p>For hardware behavior beyond what the binary showed, the working references are the <a href="https://psx-spx.consoledev.net/graphicsprocessingunitgpu/">PSX-SPX documents</a> (formerly no$psx), the <a href="https://github.com/JaCzekanski/ps1-tests">public PS1 test ROMs</a>, and hardware measurements published by other projects. Each module in our tree cites what it mirrors; every corner where our model is a guess rather than a verified fact carries an <code>UNVERIFIED</code> comment, so the next reader knows exactly where the map ends.</p>
+        <div class="callout">
+          <span class="tag">Provenance</span>
+          <p>Every subsystem in <code>apps/src/core/</code> cites the binary function or spec section it was derived from. No emulator source was copied. Where hardware behavior was measured by other projects (for example, the MDEC's output rounding, measured on silicon), the measurement is cited, not reimplemented from their code.</p>
+        </div>
+      </section>
+
+      <!-- ============ CH 2 ============ -->
+      <section class="chapter" id="c2">
+        <h2><span class="chnum">Chapter 02 · What we built</span>The Machine, Subsystem by Subsystem</h2>
+        <hr class="rule">
+        <p>Twenty-four source files under <code>apps/src/core/</code>, each held under 600 lines by rule, each owning one piece of the machine. This chapter is the tour.</p>
+
+        <h3>CPU — <code>cpu.ts</code>, 514 lines</h3>
+        <p>The MIPS R3000A interpreter: the full user ISA (SPECIAL/REGIMM, jumps and branches, ALU ops, loads and stores including the byte-exact <code>LWL/LWR/SWL/SWR</code> unaligned merge sequences taken from the reference binary), <code>MULT/DIV</code> with correct signed semantics, <code>LL/SC</code> (uniprocessor: always succeed), COP0 (<code>MFC0/MTC0/RFE</code>), COP2 dispatch into the GTE, <code>LWC2/SWC2</code> GTE memory transfers, and the two signature R3000A hazards — the <strong>load delay slot</strong> and the <strong>branch delay slot</strong> — modeled explicitly rather than hidden. Exceptions route through a real CP0 path (CAUSE/EPC/SR doubling) with a BIOS-free fallback: if no handler sits at vector <code>0x80000080</code>, the CPU emulates the BIOS default outcome and skips the faulting instruction.</p>
+
+        <h3>GTE — <code>gte.ts</code>, 866 lines</h3>
+        <p>Coprocessor 2, the fixed-point geometry machine. This grew from eight commands at the start of day two to <strong>all twenty-two commands in the psx-spx real-opcode table</strong> — every coordinate, general-purpose, color, depth-cue, average-Z, and interpolation command, including the two hardware bugs (<code>MVMVA</code>'s broken FC translation vector, the RTPS IR3 flag quirk) that games quietly depend on. It deserves its own five chapters, and gets them below.</p>
+
+        <h3>GPU — <code>gpu.ts</code> + <code>gpu-raster.ts</code></h3>
+        <p>1 MiB of VRAM as one <code>Uint16Array</code> (1024×512, 15-bit BGR555 with a mask bit at bit 15). The GP0 parser decodes polygon word counts from the command bits rather than a lookup of common cases: the 20h–3Fh polygon family (flat/gouraud × triangle/quad × untextured/textured), the 60h–7Fh rectangle family (variable/sizes 1×1, 8×8, 16×16), Fill-VRAM, CPU→VRAM image load, VRAM→CPU store, and the E1h–E5h draw-mode commands. GP1 handles display enable, DMA direction, display area, horizontal/vertical ranges, and mode — and the display rectangle is derived from those ranges the way the hardware does it (horizontal size rounded to four pixels, vertical exact), not from a fixed 640×480 assumption.</p>
+        <p>The rasterizer is software: a scanline integer DDA with <em>all</em> interpolation in 16.16 fixed point, closed spans (both boundary pixels drawn), quads decomposed into two triangles along the v1–v2 diagonal, 4-bit/8-bit CLUT and 15-bit direct textures, texture color modulation in the PS1's integer style, the four semi-transparency modes, the 4×4 dither table, and the drawing clip plus signed draw offsets. It renders into native VRAM — always — even in the 2×/4× internal-resolution mode, which scales only geometry and keeps VRAM semantics native.</p>
+
+        <h3>CDROM — <code>cdrom.ts</code>, 560 lines</h3>
+        <p>The drive controller as a state machine: a 16-deep parameter FIFO, a response FIFO with the hardware's wrap-and-replay read behavior, a one-deep queue for second responses delivered after the first is acknowledged, and the full command surface — Getstat, Setloc, Play, ReadN/ReadS, MotorOn, Stop, Pause, Init, Setfilter, Setmode, Getparam, GetlocL/P, GetTN/TD, SeekL/P, Test, GetID, Reset, ReadTOC — with the correct INT3-first / INT2-second / INT1-data / INT5-error rhythm and a latched error byte for INT5. Sector data is fed by host disc-image loaders; the controller itself knows nothing about files.</p>
+
+        <h3>DMA — <code>dma.ts</code>, 172 lines</h3>
+        <p>Seven channels with the real register file (MADR/BCR/CHCR triplets), DPCR enable nibbles, burst/block/linked-list sync modes, the OTC reverse-ordering-table channel, write-1-clear completion flags in DICR, and the derived master flag. Channel 2 drains GPU linked lists <em>and</em> raw block streams into the same GP0 sink; channel 3 is gated on the CDROM's data-request bit, because the drive will not be drained before it says data is ready.</p>
+
+        <h3>SPU — <code>spu.ts</code>, <code>spu-voice.ts</code>, <code>spu-audio.ts</code></h3>
+        <p>24 voices, ADPCM block decode with the exponent/filter header, Gaussian pitch interpolation, the four-phase ADSR envelope, key-on/key-off, a 512 KiB sound RAM, an IRQ address comparator, and a WebAudio sink that receives bounded transferred buffers — never per-sample React state. Reverb, pitch modulation, and noise generators are documented skips.</p>
+
+        <h3>MDEC — <code>mdec.ts</code> + <code>mdec-bs.ts</code> + <code>mdec-tables.ts</code></h3>
+        <p>The macroblock decoder behind full-motion video: run-level decode in both the fixed-length and Sony BS variable-length bitstream formats, an AAN fast-path IDCT for standard quant tables and a real-matrix general path for custom ones, YUV→RGB with the reference's exact constants (B uses 1.7754, not 1.772 — a genuine hardware quirk), and the measured output rounding: round half <em>down</em>, mask to signed 9 bits <em>before</em> saturating, so an overrun decodes black, not white.</p>
+
+        <h3>Timers, pads, cards — <code>rcnt.ts</code>, <code>joypad.ts</code>, <code>memory-card.ts</code></h3>
+        <p>Three root counters with sysclk/pixel/hblank clock sources, sync modes, target reset, and one-shot/repeat IRQ behavior — including counter 2's synchronized stop modes. The SIO0 serial controller speaks the real pad protocol: 0x01 select, 0x42 read, the dual-shock config-mode command set (0x43 enter/exit, 0x44 mode/lock, 0x46/0x48/0x4C constants, 0x4D rumble mapping), analog axes, and rumble actuators. Memory cards are full 128 KiB images with the spec protocol (0x52 read / 0x53 ID / 0x57 write, XOR checksums, the "MC" filesystem header, a formatted-card factory), persisted in IndexedDB — never uploaded.</p>
+
+        <h3>The shell — <code>machine.ts</code>, <code>syscall.ts</code>, <code>loader/</code>, <code>state-*.ts</code>, workers</h3>
+        <p><code>machine.ts</code> is the bus: the MMIO port map, the interrupt status/mask registers with write-zero-clear semantics, the per-slice scheduler (DMA → events → CDROM → SPU → timers → VBlank), and the BIOS-kernel interrupt delivery. <code>syscall.ts</code> is the HLE shield: A/B/C-call tables sufficient to boot real games without a BIOS. The loader family reads PS-X EXE, CUE/BIN, ISO, CHD v4/v5, PBP, and raw MDF. Save states are a versioned, schema-validated whole-machine format ("RPSX", version 6). The worker layer owns the Machine on a dedicated thread; the UI never touches emulator state directly. And an ePSXe-style React UI — menus, video/gamepad/memory-card dialogs cloned from a 598-widget GTK blueprint extracted out of the reference binary — wraps all of it.</p>
+
+        <div class="tblwrap">
+          <table>
+            <thead><tr><th>Subsystem</th><th>State</th><th>How it's verified</th></tr></thead>
+            <tbody>
+              <tr><td><code>memory.ts</code></td><td>done</td><td>exhaustive 65,536-page translation test</td></tr>
+              <tr><td><code>cpu.ts</code> interpreter</td><td>done</td><td>ISA conformance vs independent models</td></tr>
+              <tr><td><code>gte.ts</code></td><td>near-complete</td><td>RTPS vectors, RTPT≡3×RTPS 10k, UNR divide, per-family vectors</td></tr>
+              <tr><td><code>gpu.ts</code> + raster</td><td>done core</td><td>golden pixel vectors + out-of-bounds property tests</td></tr>
+              <tr><td><code>cdrom.ts</code></td><td>done core</td><td>23 controller tests + boot integration</td></tr>
+              <tr><td><code>dma.ts</code></td><td>done</td><td>20 tests + GPU/CDROM/MDEC cross-module tests</td></tr>
+              <tr><td><code>spu*.ts</code></td><td>done minus reverb</td><td>27 tests (voices, ADPCM, gauss, ADSR)</td></tr>
+              <tr><td><code>mdec*.ts</code></td><td>done</td><td>41 tests, golden vectors, full DMA decode</td></tr>
+              <tr><td><code>loader/</code></td><td>done</td><td>34 loader tests (cue/iso/chd/pbp/psexe)</td></tr>
+              <tr><td><code>dynarec/</code></td><td>opt-in tier</td><td>parity suite + browser E2E self-loop</td></tr>
+              <tr><td>UI + worker + states</td><td>done</td><td>browser E2E + config + state round-trip tests</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <!-- ============ CH 3 ============ -->
+      <section class="chapter" id="c3">
+        <h2><span class="chnum">Chapter 03 · Two days, 96 commits</span>The Chronology</h2>
+        <hr class="rule">
+        <p>The git log reads like a compressed novel. Here it is with the connective tissue restored.</p>
+
+        <h3>Phase 0–1 — something boots (Nov 22)</h3>
+        <p>Checkpoint zero was a workspace and a knowledge base. Then the memory map — the full 4 GiB translation with its mirror regions, in one exhaustive test that walks all 65,536 pages. Then the CPU interpreter, the GTE first cut, the root counters, the PS-X EXE loader, and a React shell. The day's proof: <strong>a hand-assembled PS-X EXE, loaded through the real loader, executed by the real CPU, across the real bus, into the real GPU, putting a verified <code>rgb(0,255,0)</code> pixel on a canvas in a real browser.</strong> BIOS-free, because a PS-X EXE contains its own entry point and needs no retail boot ROM — only the handful of kernel calls a well-behaved program makes, which the HLE shield answers.</p>
+
+        <h3>Phase 2–3 — the machine fills in (Nov 22, overnight)</h3>
+        <p>The software rasterizer landed as a delegated slice (<code>gpu-raster.ts</code>, flat/gouraud, 4/8-bit CLUT + 15-bit textures, blends, dither) and was wired into the GP0 polygon path. Then the peripheral wave, each slice built by a separate agent and integrated behind a green suite: the CDROM controller, the SPU with its WebAudio sink, the MDEC, the seven-channel DMA, the disc loaders, and the full-machine snapshot/restore. Session notes tallied 237 tests green, strict TypeScript clean, CI gating every push.</p>
+
+        <h3>Homebrew, then retail (Nov 23)</h3>
+        <p>Nortis, a homebrew Tetris clone, became the first <em>real game code</em> to run: extracted from a MODE2/2352 image, booted BIOS-free, twelve million cycles executed. Its boot chain exercised everything at once — crt0 register init, the BLTZ preamble, A/B-call graphics and pad init, VBlank IRQs at ~60 Hz driving VSync waits. It stopped, honestly, at <code>B_open</code>: file I/O over the CDROM needs a BIOS filesystem layer, which became the next session's first ticket.</p>
+        <p>Then 3Xtreme, a commercial title, went through the browser. The commits between "boots 3Xtreme" and "reaches MISSION" are almost entirely fixes with regression tests attached — that's chapter 04. By the evening of Nov 23: <strong>FE.EXE → GAME.EXE, a real loading screen, the title screen, a live MISSION screen, an animated race, Start-button input accelerating and steering the car, pause and resume working.</strong> 407 tests, TypeScript clean, repeatable browser E2E covering rendering, run controls, fullscreen, audio unlock/mute/volume, persisted settings, and the native/2×/4× renderer switch.</p>
+
+        <h3>Day three and the GTE gap (Nov 24)</h3>
+        <p>The last commits are the interrupt-timing cluster (chapter 04) and — crucially — the first three GTE depth-cue and normal-color command commits. The rendering-fidelity work had begun. The <a href="knowledge-base/RENDERING-BOTTLENECKS.md"><code>RENDERING-BOTTLENECKS.md</code></a> doc written at that milestone is the honest ledger: the game runs and animates, but scenes do not yet match a hardware reference frame, because the GTE and GPU command coverage is not yet complete. Chapters 07–12 are that ledger, expanded.</p>
+        <div class="callout gray">
+          <span class="tag">Milestone discipline</span>
+          <p>The README still says 3Xtreme is "not playable" even though a race runs. The distinction: input is verified only through Start-accelerate-steer for minutes at a time, and rendering fidelity is known-incomplete. The status field in the docs matches what was actually observed, not what we hoped.</p>
+        </div>
+      </section>
+
+      <!-- ============ CH 4 ============ -->
+      <section class="chapter" id="c4">
+        <h2><span class="chnum">Chapter 04 · Bugs that taught us the hardware</span>Seven Failures, Seven Lessons</h2>
+        <hr class="rule">
+        <p>The interesting bugs weren't typos. Each one was a place where our mental model of the console was wrong, and the game was right. Every fix below carries the narrowest regression test that fails without it — the standing rule of the project.</p>
+
+        <h3>1. Branch delay slots, everywhere</h3>
+        <p>The R3000A executes the instruction <em>after</em> every jump or branch before control transfers. We knew that. We got it wrong three separate ways anyway. The interpreter initially skipped the delay slot on <code>JR/JALR</code>. The dynarec broke <strong>load delay at block boundaries</strong> — a load whose value lands "next instruction" is a different thing when the next instruction is in a different compiled block. And most subtly: interrupts arrived <em>between a branch and its delay slot</em>, and the exception handler's save/restore didn't preserve the in-branch-delay state, so execution resumed on the wrong side of the branch. The fix introduced an explicit <code>executingDelaySlot</code> flag feeding CAUSE bit 31 and EPC adjustment, plus a slice-boundary rule in the run loop: if a slice ends between a branch and its slot, the slot executes interpreted so a linear compiled block cannot NOP-slide past a jump target.</p>
+        <p>The same class of bug showed up as an <strong>exception-vector NOP-slide</strong>: with no BIOS, the vector at <code>0x80000080</code> contained garbage that happened to decode as instructions returning past EPC — a wild resume that looked almost like progress. The final exception path checks the vector for a real handler and otherwise emulates the BIOS default outcome deterministically.</p>
+
+        <h3>2. CDROM register banking and the data request</h3>
+        <p>The CDROM controller exposes four register banks through two address bits, and every one of our early bugs lived in the gap between "what the spec says port 1 does" and "what port 1 does <em>at index 3</em>". Writes were routed through the register banks (<code>da1af13</code>) so that command writes only happen at index 0, interrupt-enable only at index 1, and the INT acknowledge write only at index 1 of port 3. Then the deeper one: the game enabled the data request (<code>BFRD</code>, port 3 bit 7) <em>before</em> the sector arrived, and we cleared the request state on every read boundary, so DMA channel 3 was gated off forever. The fix (<code>2a5bf4b</code>): the request bit may precede the sector; the data-request state persists until the sector is fully drained; and the DMA channel-transfer gate now polls the drive's actual request bit rather than an assumed readiness. Sector-size mode bits (2048 vs 2340-byte exposure), post-DMA sector advance, and repeated GPU/SPU DMA completion notifications filled out the cluster.</p>
+
+        <h3>3. DICR completion flags and the interrupt that would not clear</h3>
+        <p>DMA completion interrupts were being raised but never <em>de</em>-asserted, because we treated DICR like a status register instead of what it is: per-channel write-1-clear flags at bits 24–30, enables at 16–22, a master enable at bit 23, and a <em>derived</em> master flag at bit 31 that is computed from the others. The fix (<code>61e8b1e</code>, <code>cc37ef4</code>) implemented the real derivation — master flag = bus-error OR (master-enable AND any channel flag) — cleared it when acknowledgement drops the last flag, and cleared the CPU interrupt line (I_STAT bit 3) when the master flag falls. Edge-triggered delivery: the line fires only on the pending <em>transition</em>, exactly like the hardware.</p>
+
+        <h3>4. COP2 control transfers: the GTE was half-blind</h3>
+        <p>The game configured its camera by writing the rotation matrix, translation vector, projection distance <code>H</code>, and screen offsets — all <em>control</em> registers, written by <code>CTC2</code>. Our COP2 decode handled data-register transfers (<code>MFC2/MTC2</code>) but mapped control transfers onto data registers: every <code>CTC2</code> wrote into the wrong file, so the GTE transformed every vertex with a stale identity matrix. The fix (<code>39fc095</code>) split the four transfer forms correctly (<code>MFC2</code>/<code>CFC2</code>/<code>MTC2</code>/<code>CTC2</code>, selecting the data or control file by <code>rd</code>), and a follow-up (<code>0a42c7b</code>) fixed <code>LWC2/SWC2</code> masking register indices to 15 instead of 31 — a bug that silently aliased the upper half of both register files. After that fix, geometry on screen changed immediately: the first proof that the game had been transforming vertices with garbage.</p>
+
+        <h3>5. SIO0 ACK timing: the pad that answered too early</h3>
+        <p>The SIO0 protocol is a synchronous serial exchange where the peripheral pulls /ACK low after each byte to solicit the next. Our first implementation asserted ACK <em>synchronously, inside the write</em> — before the CPU had finished the transfer's own housekeeping — and held it forever. The pad and memory card state machines deadlocked mid-packet. Two commits (<code>be599d6</code>, <code>813a917</code>) turned ACK into a timed signal: assert 100 cycles after the transferred byte, hold low 100 cycles, raise the ACK IRQ on the assertion edge only when the DSR-interrupt-enable bit allows, and let <code>ERRRST</code> and control-register resets cancel pending state. The joypad grew a <code>tick()</code> that the machine loop advances per slice.</p>
+
+        <h3>6. RCNT2 free-run: the counter that stopped during interrupts</h3>
+        <p>Root counter 2 gates itself off in "synchronized" modes — and our tick function treated <em>every</em> synchronized mode as stopped. Worse, the main loop ticked timers only per-slice, and slices were suspended entirely while an interrupt handler ran — so timer 2 froze inside handlers, and any game polling it for pacing stalled there too. Two fixes (<code>ce203e9</code>, <code>b1c719f</code>) narrowed both rules: only the genuinely stopped sync modes halt the counter (and only when the clock enable bit is set), and the handler-execution loop ticks RCNT, the joypad, and the VBlank accumulator one cycle at a time while guest code runs, so a handler that busy-waits on timer 2 sees it advance.</p>
+
+        <h3>7. Interrupt chain dispatch: running what the game registered</h3>
+        <p>The BIOS kernel API lets a game register interrupt handlers as <em>chains</em>: an <code>ExCB</code> structure per priority class holding a verifier, a FIRST function, and a SECOND function the FIRST may request by returning nonzero. We initially dispatched a single hard-coded handler. The fix (<code>ce203e9</code>, <code>d19cc9e</code>) walks the registered chains in priority order, runs FIRST, honors its nonzero return by running SECOND, and stops the whole walk when a handler exits via <code>ReturnFromException</code> — because that call semantically terminates the remainder of the dispatch, including lower-priority handlers and the custom exception hook. A later refinement (<code>0a42c7b</code>'s sibling) chooses between the full chain walk and the legacy priority-0 handler based on which devices actually have pending work, so CD/DMA service is never starved behind pad-card polling — the device-priority dispatch rule that shows up again in chapter 16.</p>
+
+        <div class="callout">
+          <span class="tag">The meta-lesson</span>
+          <p>Every one of these seven was found by observing a real game doing a real thing, reproducing the failure deterministically, naming the first <em>incorrect hardware observable</em> — not the downstream symptom — and fixing that one thing with a test that fails without it. No game-specific bypasses, no forced PC jumps, no frame patches. The working rules in <code>TODO.md</code> forbid them, precisely because each would have "fixed" a symptom and rotted the emulator.</p>
+        </div>
+      </section>
+
+      <!-- ============ CH 5 ============ -->
+      <section class="chapter" id="c5">
+        <h2><span class="chnum">Chapter 05 · The CPU in detail</span>Interpreting a 1994 Chip in 2026 JavaScript</h2>
+        <hr class="rule">
+        <p>The interpreter is one <code>switch</code> over the major opcode, executed per instruction, with state in flat typed arrays: 32 GPRs plus hardwired <code>$zero</code>, hi/lo, PC, nextPC, CP0, and a single load-delay slot. No object allocation per step — the low-RAM rule applies to the hottest loop in the program.</p>
+
+        <h3>The two hazards, made explicit</h3>
+        <p><strong>Branch delay.</strong> A taken branch sets <code>nextPc</code> to the target and raises <code>inBranchDelay</code>; the next fetch executes whatever sits in the slot, and <em>then</em> control transfers. Link registers store <code>pc+8</code> (past the slot), matching hardware. The dynarec compiles the slot into the same block as its branch and exits after it; the interpreter marks the slot with <code>executingDelaySlot</code> so exceptions record CAUSE.BD and back up EPC correctly.</p>
+        <p><strong>Load delay.</strong> On the R3000A a load's value becomes visible to the instruction <em>after next</em>, not the next one. The interpreter models exactly one pending slot with overwrite semantics (two loads back-to-back: the second wins). One of our earliest formal bugs — Nortis crashing at a block boundary — was this delay being dropped when a load was the last instruction of a compiled block. The dynarec now either publishes the value at the top of the next emitted instruction or exports it as a pending slot that the host applies.</p>
+
+        <h3>Unaligned access, the BIOS way</h3>
+        <p>Unaligned <code>LW/SW</code> trap on real hardware, and the retail BIOS handler emulates the access byte-wise and returns — it does not halt the program. Without a BIOS our exception path would NOP-slide forever, so we perform the same byte-wise emulation inline, keeping <code>LWL/LWR/SWL/SWR</code> byte-exact from the reference binary's handlers (<code>R_LWL @0x43ab20</code> and friends). <code>CACHE</code> is a no-op: the R3000A ignores it.</p>
+
+        <h3>Exception entry</h3>
+        <p>CAUSE gets the code, the pending-IRQ bit, and BD; EPC gets the faulting PC (minus 4 in a delay slot, plus 4 for reserved-instruction resume); SR doubles the privilege kernel/user bits. If a handler exists at <code>0x80000080</code> the CPU vectors there; otherwise it emulates the BIOS default and skips the instruction. This is also where the HLE syscall fast path hangs: a <code>SYSCALL</code> at the A/B/C trampoline addresses dispatches into <code>syscall.ts</code> directly, because the vector PCs themselves select the table.</p>
+
+        <h3>Two tiers, one contract</h3>
+        <p>The dynarec compiles basic blocks to WebAssembly and is strictly opt-in. The parity contract (chapter 18) is that enabling it changes performance only — identical programs produce identical interrupts, delay slots, exceptions, and memory traffic in both tiers.</p>
+      </section>
+
+      <!-- ============ CH 6 ============ -->
+      <section class="chapter" id="c6">
+        <h2><span class="chnum">Chapter 06 · The GPU and the software rasterizer</span>One Million Pixels of Integer Math</h2>
+        <hr class="rule">
+        <p>The PS1 GPU knows nothing about 3D. It consumes a command stream of 2D primitives — polygons, rectangles, lines — and fills spans. Everything "3D" about a PlayStation frame was computed <em>before</em> the GPU saw it, by the GTE. That division of labor is why the GTE chapter matters so much.</p>
+
+        <h3>VRAM and the display path</h3>
+        <p>VRAM is 1024×512 15-bit halfwords in one preallocated <code>Uint16Array</code>; bit 15 is the STP mask bit. The display area is <em>any rectangle of VRAM</em>: GP1(05h) picks the origin, GP1(06h/07h) give horizontal/vertical ranges, GP1(08h) the mode. Width derives from the horizontal range divided by the mode's cycles-per-pixel (10/8/7/5/4 for 256/320/368/512/640), rounded to four pixels; height is the exact scanline count. 24-bit mode unpacks VRAM's byte-packed triplets. Frame composition converts the active rectangle to RGBA8888 once per presented frame; scaling modes (2×/4× internal resolution) scale only subsequently-rendered geometry and are honest about it — fill/upload-only or 24-bit frames are nearest-native pixels, never advertised as enhanced.</p>
+
+        <h3>GP0 decoding from the command bits</h3>
+        <p>Polygon opcodes 20h–3Fh are a bit field: bit 3 picks tri/quad, bit 2 textured, bit 4 gouraud, bit 1 semi-transparent. Word counts decode arithmetically — vertex-0 color rides in the command word; gouraud appends n−1 color words after their position words; textured appends a texture word per vertex (CLUT base from vertex 0, texture page from vertex 1). Rectangles 60h–7Fh carry size in bits 3–4 (variable/1×1/8×8/16×16). Nothing is special-cased to a common path; the length comes from the bits.</p>
+
+        <h3>The rasterizer contract</h3>
+        <p><code>gpu-raster.ts</code> is pure functions over VRAM, no imports, no DOM. Its documented conventions:</p>
+        <ul>
+          <li>vertex coordinates sign-extend from 11 bits (X) and 9 bits (Y); pixels outside the drawing area are discarded; signed draw offsets apply after decoding;</li>
+          <li>a scanline integer DDA with <strong>all</strong> attribute interpolation in 16.16 fixed point — deterministic on float64 because every value stays an exact integer scaled by 2¹⁶;</li>
+          <li>spans are closed: both boundary pixels and the last scanline draw, so bottom edges include their vertices <span class="unv">[UNVERIFIED: exact hardware edge-inclusion]</span>;</li>
+          <li>quads decompose along the v1–v2 diagonal, mirroring hardware <span class="unv">[UNVERIFIED: diagonal choice]</span>;</li>
+          <li>texture modulation is PS1-style integer math: texel to 8-bit as <code>(t&lt;&lt;3)|(t&gt;&gt;2)</code>, then <code>(texel8 × col8) &gt;&gt; 7</code> clamped — col8 128 is unity;</li>
+          <li>semi-transparency has the four hardware modes (B+F/2, B+F, B−F, B+F/4), per 5-bit channel, applied when the primitive flag or a texel's STP bit is set;</li>
+          <li>the 4×4 dither table applies before the 5-bit output shift, keeping its native phase even at 4× geometry scale.</li>
+        </ul>
+        <p>Texture windows and the set-mask-bit write filter are documented gaps — the first already pinned by the bottleneck ledger (chapter 07), the second optional for current titles.</p>
+      </section>
+
+      <!-- ============ CH 7 ============ -->
+      <section class="chapter" id="c7">
+        <h2><span class="chnum">Chapter 07 · Rendering bottlenecks</span>The Honest Ledger</h2>
+        <hr class="rule">
+        <p>At the MISSION milestone we wrote <code>knowledge-base/RENDERING-BOTTLENECKS.md</code>: the verified baseline (boot, input, loading, save states, 407 tests — all green) followed by the eight things standing between "animated race" and "frame-matches-hardware". The order is priority order. This chapter reproduces the reasoning; the deep dives that follow cover the largest item end to end.</p>
+
+        <div class="callout gray">
+          <span class="tag">The guiding sentence</span>
+          <p>WebGPU is a presentation technology, not an emulator-correctness shortcut. Fix GTE/GPU behavior first; consider WebGPU only after geometry and frames match hardware.</p>
+        </div>
+
+        <h3>P1 — Incomplete GTE instruction set</h3>
+        <p>At the time of the ledger, <code>gte.ts</code> handled only RTPS, NCLIP, MVMVA, NCDS, NCDT, OP, SQR, RTPT. Missing commands mean the game executes valid code that computes incomplete lighting, interpolation, and ordering-table output — scenes render <em>wrong</em> rather than failing. This is now mostly closed: chapters 09–12 describe the full command table we implemented against the psx-spx real-opcode list. What remains is register/timing semantics (below) and adversarial conformance beyond the current vectors.</p>
+
+        <h3>P2 — GTE register semantics and timing</h3>
+        <p>Correct math with incorrect delay still breaks geometry. The spec's load-delay rules matter: <code>CFC2/MFC2</code> results reach the GPR one instruction later (Tekken 2 famously fills with broken geometry without this), and GTE memory transfers delay two instructions for command visibility. Our interpreter currently commits GTE register transfers synchronously — the arithmetic, saturation, and FLAG behavior are exact; the <em>timing</em> of register visibility is not modeled yet. That is the next GTE ticket, alongside the SXY/SZ/RGB FIFO order, IRGB/ORGB conversion timing, and adversarial overflow tests.</p>
+
+        <h3>P3 — Incomplete GP0 coverage</h3>
+        <p>Polygon and rectangle families decode correctly; the line family (commands 40h–5Fh) is absent entirely, and some rendering attributes (texture windows, mask-bit writes) are unimplemented. Menus and simple rectangles render while textured track geometry, HUD lines, and effects remain wrong. The fix is the same discipline as everywhere else: decode packet lengths from the command bits — already done for polygons and rects — and add command-by-command tests including textured lines and variable-size rectangles.</p>
+
+        <h3>P4 — Texture pages, CLUTs, affine mapping</h3>
+        <p>The renderer uses native VRAM textures with 4/8/15-bit paths, but texture-window wrapping and edge behavior are unverified against commercial scenes. A valid projection with wrong texture addressing looks materially different from a hardware frame even though the frame animates. Two things are settled policy: preserve PS1 affine mapping (no perspective-correct interpolation — the warping <em>is</em> the look), and compare composed-frame pixels against native VRAM for each texture path.</p>
+
+        <h3>P5 — Rasterization, shading, edges</h3>
+        <p>Edge inclusion, texture-window rounding, and quad decomposition are marked UNVERIFIED in the rasterizer header. Even with correct GTE math, edge errors, dither phase, semi-transparency order, and diagonal choice change visible output. The plan is deterministic pixel fixtures — triangles, quads, lines, clipping, texture windows — before touching fill behavior, plus hardware-measured references like Copetti's writeup for the inclusion rule.</p>
+
+        <h3>P6 — DMA, IRQ, handler scheduling</h3>
+        <p>Mostly closed by the day-two fixes (chapter 04): device-priority dispatch, DICR derivation, data-request gating. What remains is replacing the "one interrupt-bucket per slice" CDROM timing model and the ad hoc peripheral ticking with a deterministic event queue (TODO 4.2), so adjacent CD/DMA/VBlank completions order exactly as hardware would.</p>
+
+        <h3>P7 — Presentation and frame pacing</h3>
+        <p>Headless replay and a live browser can differ when RAF throttles or a tab pauses — host problems, not game-state differences. The fix already shipped: the cycle budget runs on elapsed console time, not display frames (chapter 15), and each input snapshot applies exactly once without resetting controller configuration (a real bug we hit: <code>cfdc035</code>). What remains is frame-hash comparison over minutes in a visible focused tab.</p>
+
+        <h3>P8 — Audio and SPU/DMA timing</h3>
+        <p>SPU output runs and audio controls pass E2E, but game-specific audio timing is approximate: SPU DMA completion events, voice timing, ring occupancy, and underrun behavior during real gameplay all need verification. The bounded audio ring and the no-host-work-in-hot-path rules stay regardless.</p>
+
+        <h3>Implementation order</h3>
+        <ol>
+          <li>Complete GTE opcodes and register/timing semantics <em>(opcodes: done; timing: open)</em></li>
+          <li>Independent GTE command vectors and public test-program checks <em>(partially open)</em></li>
+          <li>Complete GP0 line/rectangle and texture/CLUT paths <em>(open)</em></li>
+          <li>Validate raster output against deterministic fixtures and commercial frames <em>(open)</em></li>
+          <li>Recheck DMA/IRQ and audio timing in the live game <em>(open)</em></li>
+          <li>Only then evaluate a WebGPU presentation backend <em>(deliberately last)</em></li>
+        </ol>
+        <p>Acceptance is frame-level: the expected ePSXe scene and the browser scene show equivalent geometry, textures, and HUD; the race runs responsive for minutes; no invalid execution, handler truncation, frozen frame, or CD retry loop; full suite, TypeScript, Docker, E2E, and CI stay green.</p>
+
+        <div class="refs">
+          <span class="tag">References</span>
+          <ul>
+            <li><a href="https://psx-spx.consoledev.net/geometrytransformationenginegte">PSX-SPX — Geometry Transformation Engine (GTE)</a></li>
+            <li><a href="https://psx-spx.consoledev.net/gtepipelinetimings">PSX-SPX — GTE pipeline timings</a></li>
+            <li><a href="https://psx-spx.consoledev.net/graphicsprocessingunitgpu/">PSX-SPX — GPU specification</a></li>
+            <li><a href="https://psx-spx.consoledev.net/ps1/gpu/render-line-commands">PSX-SPX — GPU render line commands</a></li>
+            <li><a href="https://psx-spx.consoledev.net/dmachannels">PSX-SPX — DMA channels</a> · <a href="https://psx-spx.consoledev.net/interrupts">interrupts</a> · <a href="https://psx-spx.consoledev.net/timers">timers</a> · <a href="https://psx-spx.consoledev.net/soundprocessingunitspu">SPU</a></li>
+            <li><a href="https://github.com/JaCzekanski/ps1-tests">JaCzekanski — PS1 test collection</a></li>
+            <li><a href="https://github.com/stenzek/duckstation/blob/master/src/core-tests/gte_timing_tests.cpp">DuckStation — GTE timing tests</a></li>
+            <li><a href="https://www.copetti.org/writings/consoles/playstation">Copetti — PlayStation architecture (rasterisation &amp; textures)</a></li>
+            <li><a href="https://www.breck-mckye.com/psnoobsdk-docs/chapter1/3-textures.html">Textures, TPages, and CLUTs tutorial</a></li>
+          </ul>
+        </div>
+      </section>
+
+      <!-- ============ CH 8 ============ -->
+      <section class="chapter" id="c8">
+        <h2><span class="chnum">Chapter 08 · The GTE, explained</span>The Coprocessor That Was the 3D</h2>
+        <hr class="rule">
+        <p>Stand where a 1994 game programmer stood. The R3000A has no floating-point unit. Not a slow one — <em>none</em>. Every multiply that matters is integer. If you want to place a textured, lit, perspective-correct-looking triangle on screen, you will do it in fixed point, and you will do it fast, because you need thousands of vertices per frame at 30 or 60 frames per second on a 33.87 MHz chip.</p>
+        <p>Sony's answer was to put the whole 3D pipeline in silicon next to the CPU: the <strong>Geometry Transformation Engine</strong>, coprocessor 2. It has no memory, no I/O ports, no DMA. The CPU feeds it registers, issues one opcode, waits a handful of cycles, and reads results back. In exchange it performs the vector/matrix heart of a 3D renderer — rotation, projection, lighting, depth cueing, clipping, ordering-table depth keys — in fixed point with hardware saturation, in 5 to 44 cycles.</p>
+
+        <h3>What the CPU sees</h3>
+        <p>The GTE is reached only through coprocessor opcodes:</p>
+        <pre><code>mfc2 rt, rd     ; read GTE data register rd  (with a load delay!)
+cfc2 rt, rd     ; read GTE control register rd
+mtc2 rt, rd     ; write GTE data register rd
+ctc2 rt, rd     ; write GTE control register rd
+lwc2 rt, addr   ; load a GTE data register from memory
+swc2 rt, addr   ; store a GTE data register to memory
+cop2 0x0280030  ; execute RTPT — the command itself</code></pre>
+        <p>That final form — <code>COP2</code> with a 25-bit immediate — is the command. Everything else is plumbing. Two facts about the plumbing turned out to be the difference between "renders" and "renders correctly" for us: the control registers are where the camera lives (rotation matrix, translation, projection constants), and we initially didn't decode <code>CTC2</code> at all (chapter 04, bug 4).</p>
+
+        <h3>Why fixed point — and why 1.3.12</h3>
+        <p>The GTE's native format is <strong>1.3.12</strong>: one sign bit, three integer bits, twelve fraction bits. A value of 1.0 is stored as 4096 (<code>0x1000</code>). The rotation/light/color matrices hold 1.3.12 halfwords; the translation, background-color, and far-color vectors hold 32-bit 1.19.12 words; the accumulators are 32- and 44-bit integers that absorb the intermediate precision. The <code>sf</code> ("shift fraction") bit on each command says whether to divide results by 4096 — i.e. whether the inputs carried fraction bits or not.</p>
+        <p>Why not more integer bits? Because coordinates and normals are small, and the 1.3.12 range of ±8.0 covers every direction vector and every matrix element a game needs, with 12 bits of fraction precision — about 0.024% resolution — far beyond what a 1994 television could show. The accumulators exist precisely so the intermediate sums don't have to fit in 16 bits: MAC1..MAC3 are effectively 44-bit accumulators, and the FLAG register records when even those overflow.</p>
+
+        <h3>The register files</h3>
+        <div class="tblwrap">
+          <table>
+            <thead><tr><th>Registers</th><th>Contents</th></tr></thead>
+            <tbody>
+              <tr><td><code>cop2r0–5</code></td><td>V0, V1, V2 — three input vertices, each 3×s16 packed into two words</td></tr>
+              <tr><td><code>cop2r6</code></td><td>RGBC — the input color (R,G,B bytes + a code byte the game uses freely)</td></tr>
+              <tr><td><code>cop2r7</code></td><td>OTZ — average-Z output used as the ordering-table index (depth sort key)</td></tr>
+              <tr><td><code>cop2r8</code></td><td>IR0 — interpolation factor from the perspective divide (0..4096)</td></tr>
+              <tr><td><code>cop2r9–11</code></td><td>IR1..IR3 — the 16-bit vector accumulators</td></tr>
+              <tr><td><code>cop2r12–14</code></td><td>SXY FIFO — screen X/Y coordinates, three stages deep (SXY0←SXY1←SXY2)</td></tr>
+              <tr><td><code>cop2r16–19</code></td><td>SZ FIFO — screen Z, four stages deep</td></tr>
+              <tr><td><code>cop2r20–22</code></td><td>RGB FIFO — output colors, three stages deep (game reads vertex colors from here)</td></tr>
+              <tr><td><code>cop2r24–27</code></td><td>MAC0..MAC3 — the 32-bit multiply accumulators</td></tr>
+              <tr><td><code>cop2r28/29</code></td><td>IRGB/ORGB — 15-bit color ↔ 16-bit accumulator conversion shortcuts</td></tr>
+              <tr><td><code>cop2r30/31</code></td><td>LZCS/LZCR — count-leading-zeroes/ones unit</td></tr>
+              <tr><td><code>cnt0–4</code></td><td>RT — the 3×3 rotation matrix, 1.3.12 halfwords packed two per word</td></tr>
+              <tr><td><code>cnt5–7</code></td><td>TRX/TRY/TRZ — translation vector, 32-bit 1.19.12</td></tr>
+              <tr><td><code>cnt8–12</code></td><td>LLM — light-source matrix</td></tr>
+              <tr><td><code>cnt13–15</code></td><td>BK — background color</td></tr>
+              <tr><td><code>cnt16–20</code></td><td>LCM — light-color matrix</td></tr>
+              <tr><td><code>cnt21–23</code></td><td>FC — far color (depth-cue fog color)</td></tr>
+              <tr><td><code>cnt24/25</code></td><td>OFX/OFY — screen offset (usually 1024, the VRAM origin hack)</td></tr>
+              <tr><td><code>cnt26</code></td><td>H — projection-plane distance, 1.17.15... in practice: bigger = zoomed out</td></tr>
+              <tr><td><code>cnt27/28</code></td><td>DQA/DQB — depth-cue interpolation slope/intercept for IR0</td></tr>
+              <tr><td><code>cnt29/30</code></td><td>ZSF3/ZSF4 — average-Z scale factors (typically H/3 and H/4)</td></tr>
+              <tr><td><code>cnt31</code></td><td>FLAG — the error/saturation register</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <p>Three of those are not registers in any comfortable sense: the SXY, SZ, and RGB files are <strong>FIFOs</strong> — every command that produces a screen coordinate pushes the pipeline down (SXY2←SXY1←SXY0, and so on for SZ and RGB). A game projecting a triangle runs RTPS three times and then reads all three SXY stages, or runs RTPT once and reads the same FIFO at once. NCLIP — the backface test — operates purely on the SXY FIFO. Get the push order wrong and polygons vanish or invert; get it right and the same FIFO serves projection, clipping, and depth-cue in sequence.</p>
+
+        <h3>The classic per-vertex flow</h3>
+        <pre><code>; load vertex
+mtc2  vx0, 0      ; VXY0 = (x,y)
+mtc2  vz0, 1      ; VZ0  = z
+; camera already loaded via ctc2: RT, TR, screen offsets, H
+nop               ; (a real GTE needs this; see load-delay note in ch.12)
+rtps  sf=1, lm=0  ; COP2 0x0180001 — project one vertex
+; results: SXY2 = screen xy, SZ3 = depth, MAC1-3/IR1-3 = camera-space
+;          IR0  = depth-cue factor, FLAG = saturation/error bits</code></pre>
+        <p>Three vertices through that, then NCLIP to reject the backface, then AVSZ3 to make the ordering-table key, then a color command to light it, then the game writes a 9-word GP0 polygon packet whose screen coordinates came straight out of the SXY FIFO. That is a PlayStation frame's worth of geometry, thousands of times per second — and it is why the GTE, not the GPU, is where a PS1 emulator's 3D correctness lives.</p>
+      </section>
+
+      <!-- ============ CH 9 ============ -->
+      <section class="chapter" id="c9">
+        <h2><span class="chnum">Chapter 09 · GTE: the pipeline, cycle by cycle</span>Saturation, Division, and FLAG</h2>
+        <hr class="rule">
+        <p>Every GTE command is the same small vocabulary applied in a different order: dot products against matrix rows, shifts, saturating stores, FIFO pushes, and one unusual division. Before the commands, the vocabulary.</p>
+
+        <h3>MAC and IR — the two-stage accumulator</h3>
+        <p>Every vector result passes through two stages. <strong>MAC1..3</strong> hold the raw 44-bit sums; <strong>IR1..3</strong> hold the 16-bit working values derived from them. Two decisions happen between the stages, and both are opcode bits:</p>
+        <ul>
+          <li><code>sf</code> (bit 19): store <code>MAC = sum SAR (sf ? 12 : 0)</code> — the shift that converts 1.3.12 products back to integers;</li>
+          <li><code>lm</code> (bit 10): saturate IR at −8000h (lm=0, signed) or at 0 (lm=1, "limit negative"). Lighting code sets lm=1 because a negative light intensity must clamp to black, not wrap.</li>
+        </ul>
+        <p>MAC overflow never saturates the stored MAC — the spec is explicit that MAC0..3 keep their raw (shifted) values — but sets FLAG bits 30–25. IR saturation clamps and sets bits 24–22. Both facts took careful reading: our first draft clamped MACs, which is exactly the bug class the FLAG contract exists to catch.</p>
+
+        <h3>FLAG — the error ledger</h3>
+        <p>FLAG (cnt31) is the GTE's contract with the game: bits 30–23 record MAC/IR/color overflow, bit 18 SZ saturation, bit 17 divide overflow, 16–15 MAC0 overflow, 14–13 screen-coordinate saturation, 12 IR0 saturation. Bit 31 — the one games actually test — is the OR of bits 30–23 and 18–13. Every command clears bits 30–12 at entry, and a game checks bit 31 after a projection to decide whether the vertex went off-screen and needs clipping. Our <code>updateErrorBit()</code> recomputes that OR after every command, and the test suite holds the invariant "bit 31 set iff any error bit set" over randomized inputs.</p>
+        <p>One deliberate asymmetry, straight from the spec: in RTPS/RTPT, the <em>IR3 saturation flag</em> (bit 22) always behaves as if lm=0 — it flags and tests <code>acc SAR 12</code> even when sf=0 — while the stored IR3 value respects the real lm bound. Games depend on this; we reproduce it exactly, with a comment pointing at the spec note.</p>
+
+        <h3>The division that isn't one</h3>
+        <p>The perspective divide in RTPS needs <code>H/SZ3</code> — a division. The GTE has no divider. Instead it uses a <strong>signed Newton–Raphson–style reciprocal</strong> built on a 257-entry table: normalize SZ3 into 8000h–FFFFh by a shared left shift, look up an approximate reciprocal, run two correction steps, and multiply. The psx-spx pseudocode (our <code>unrDivide</code> follows it verbatim, matching DuckStation's UNRDivide shape):</p>
+        <pre><code>if (H &lt; SZ3*2):           ; overflow path — result saturates to 1FFFFh
+  z = count_leading_zeroes(SZ3); n = H &lt;&lt; z; d = SZ3 &lt;&lt; z   ; d in 8000..FFFF
+  u = unr_table[(d - 7FC0h) &gt;&gt; 7] + 101h
+  d = (2000080h - d*u) &gt;&gt; 8
+  d = (80h + d*u) &gt;&gt; 8
+  n = min(1FFFFh, (n*d + 8000h) &gt;&gt; 16)
+else: n = 1FFFFh + FLAG.17/FLAG.31</code></pre>
+        <p>The table itself is <code>max(0, (40000h/(i+100h)+1)/2 − 101h)</code> — generated once at module load, bit-equal to the hard-coded hardware table. The subtleties are everywhere: results of exactly 20000h saturate to 1FFFFh <em>without</em> raising the overflow flag; the 33-bit intermediate is emulated in float64 (which holds these integers exactly); SZ3=0 takes z=16. This function is pinned by its own test against hand-computed values, because every zoomed-in polygon on screen depends on it.</p>
+
+        <h3>Screen coordinates and the depth-cue tail</h3>
+        <p>After the divide, RTPS finishes with pure arithmetic: <code>MAC0 = n·IR1 + OFX</code>, screen X = <code>MAC0 >> 16</code> saturated to −1024..+1023; same for Y with OFY. SX2/SY2 push the SXY FIFO, SZ3 pushes the SZ FIFO. On the <em>last</em> vertex of a primitive (RTPS, or the third vertex of RTPT), the depth-cue tail computes <code>MAC0 = n·DQA + DQB</code> and <code>IR0 = MAC0 >> 12</code> clamped to 0..4096 — the fog interpolation factor the color commands will use.</p>
+
+        <h3>Command timing, and why we model it loosely</h3>
+        <p>Hardware cycle costs are known exactly — RTPS 15 cycles, RTPT 23, NCDT 44, the little commands 5–8 — and the CPU stalls until a command finishes, so <em>net</em> cost is knowable. Our model executes commands atomically and doesn't charge their cycle counts to the interpreter's counter; timing fidelity here is an open item tied to the wider event-queue work (chapter 07, P6). The stall behavior itself is free: an atomic execution is indistinguishable from a stall at our slice granularity.</p>
+
+        <div class="refs">
+          <span class="tag">References</span>
+          <ul>
+            <li><a href="https://psx-spx.consoledev.net/geometrytransformationenginegte">PSX-SPX — GTE saturation, FLAG map, division inaccuracy</a></li>
+            <li><a href="https://psx-spx.consoledev.net/gtepipelinetimings">PSX-SPX — GTE pipeline timings</a></li>
+            <li><a href="https://github.com/stenzek/duckstation/blob/master/src/core-tests/gte_timing_tests.cpp">DuckStation — GTE timing tests</a></li>
+          </ul>
+        </div>
+      </section>
+
+      <!-- ============ CH 10 ============ -->
+      <section class="chapter" id="c10">
+        <h2><span class="chnum">Chapter 10 · GTE: the command families</span>Twenty-Two Commands, Six Jobs</h2>
+        <hr class="rule">
+        <p>The psx-spx real-opcode table (bits 0–5 of the command word) lists every command the hardware executes. Ours now covers the table: every coordinate, general-purpose, color, depth-cue, and interpolation command, plus the two hardware quirks. The families tell the story better than a flat list.</p>
+
+        <h3>Family 1 — Coordinate calculation: where polygons come from</h3>
+        <div class="tblwrap">
+          <table>
+            <thead><tr><th>Opcode</th><th>Clk</th><th>Command</th><th>What it does</th></tr></thead>
+            <tbody>
+              <tr><td><code>01h</code></td><td>15</td><td>RTPS</td><td>Rotate–translate–project–screen: single vertex to screen XY + depth</td></tr>
+              <tr><td><code>30h</code></td><td>23</td><td>RTPT</td><td>RTPS ×3 in one command (triangle); only the third runs the depth-cue tail</td></tr>
+              <tr><td><code>06h</code></td><td>8</td><td>NCLIP</td><td>Signed area of the SXY FIFO triangle — the backface/culling test</td></tr>
+              <tr><td><code>2Dh</code></td><td>5</td><td>AVSZ3</td><td>OTZ = (SZ1+SZ2+SZ3) × ZSF3 — the ordering-table key for triangles</td></tr>
+              <tr><td><code>2Eh</code></td><td>6</td><td>AVSZ4</td><td>Same over four entries × ZSF4, for quads</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <p>RTPS is the pipeline of chapter 09. RTPT is documented as exactly three RTPS evaluations over V0/V1/V2 — our implementation calls the same core three times and the 10k-vector property test asserts full FIFO equality with three manual RTPS runs. NCLIP is pure FIFO math: <code>MAC0 = x0·y1 + x1·y2 + x2·y0 − x0·y2 − x1·y0 − x2·y1</code>; negative means the triangle faces away. AVSZ3/4 convert the Z FIFO into an ordering-table index; negative sums saturate to 0 with FLAG bit 18.</p>
+
+        <h3>Family 2 — General purpose: the swiss-army commands</h3>
+        <div class="tblwrap">
+          <table>
+            <thead><tr><th>Opcode</th><th>Clk</th><th>Command</th><th>What it does</th></tr></thead>
+            <tbody>
+              <tr><td><code>12h</code></td><td>8</td><td>MVMVA(sf,mx,v,cv,lm)</td><td>Multiply vector by matrix, add translation — the primitive the light commands are built from</td></tr>
+              <tr><td><code>0Ch</code></td><td>6</td><td>OP(sf,lm)</td><td>Cross product of two vectors (uses RT's diagonal as a vector)</td></tr>
+              <tr><td><code>28h</code></td><td>5</td><td>SQR(sf)</td><td>Element-wise square of IR1..3</td></tr>
+              <tr><td>—</td><td>?</td><td>LZCS/LZCR</td><td>Count leading zeroes (of positive LZCS) or ones (of negative)</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <p><strong>MVMVA deserves its own paragraph</strong> because it is the GTE's instruction set within the instruction set. Its opcode bits select: which matrix (17–18: RT, LLM, LCM, or "garbage"), which vector (15–16: V0/V1/V2 or IR), which translation to add (13–14: TR, BK, FC, none), plus sf/lm. Every lighting command is essentially an MVMVA with fixed selectors plus a tail. Games use raw MVMVA for their own fixed-point linear algebra — skeletal skinning, wave functions, custom shading. The garbage-matrix selector (mx=3) isn't a joke: the hardware really multiplies by a nonsense matrix built from −R·10h, +R·10h, IR0 and stray RT elements, and our implementation reproduces it, because demos use it. And the FC translation selector (cv=2) hits a genuine <strong>hardware bug</strong> — the FC term is computed, then dropped: each row ends up with only the first matrix element's contribution. DuckStation calls this MulMatVecBuggy; we mirror it row-for-row, because games that hit the buggy path were written against the buggy hardware.</p>
+        <p>OP — the cross product — reads its "second vector" from the rotation matrix's diagonal (RT11, RT22, RT33 misused as D1/D2/D3), a hardware quirk our implementation documents rather than "fixes". SQR squares IR with no lm effect (results are never negative). LZCS/LZCR implement the count-leading-bits unit games use for fast normalization.</p>
+
+        <h3>Family 3 — Normal/color lighting: where surfaces get their shade</h3>
+        <div class="tblwrap">
+          <table>
+            <thead><tr><th>Opcode</th><th>Clk</th><th>Command</th><th>Recipe</th></tr></thead>
+            <tbody>
+              <tr><td><code>1Eh</code></td><td>14</td><td>NCS</td><td>LLM·V → (BK + LCM·IR) → color; no far-color tail</td></tr>
+              <tr><td><code>20h</code></td><td>30</td><td>NCT</td><td>NCS ×3 over V0/V1/V2</td></tr>
+              <tr><td><code>1Bh</code></td><td>17</td><td>NCCS</td><td>NCS + the far-color interpolation tail</td></tr>
+              <tr><td><code>3Fh</code></td><td>39</td><td>NCCT</td><td>NCCS ×3</td></tr>
+              <tr><td><code>13h</code></td><td>19</td><td>NCDS</td><td>NCS + depth-cue fog tail (MAC = MAC + (FC−MAC)·IR0)</td></tr>
+              <tr><td><code>16h</code></td><td>44</td><td>NCDT</td><td>NCDS ×3 — the workhorse: lit + fogged triangle colors</td></tr>
+              <tr><td><code>1Ch</code></td><td>11</td><td>CC</td><td>Color-only: skips the LLM normal rotation</td></tr>
+              <tr><td><code>14h</code></td><td>13</td><td>CDP</td><td>Color + depth cue, skipping LLM (reuse the previous lighting result)</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <p>All eight share one core in our code (<code>ncdsCore</code>) with two switches — depth-cue on/off, LLM on/off — exactly matching the spec's recipes: rotate the normal by the light matrix, apply background color through the light-color matrix, scale by the material color <code>[R·IR1, G·IR2, B·IR3] << 4</code>, optionally interpolate toward the far color by IR0, then push the color FIFO. The shared-core approach isn't laziness; it's how the hardware composes them, and it makes the FLAG behavior uniform.</p>
+
+        <h3>Family 4 — Depth cue and interpolation: fog and fades</h3>
+        <div class="tblwrap">
+          <table>
+            <thead><tr><th>Opcode</th><th>Clk</th><th>Command</th><th>Interpolates from</th></tr></thead>
+            <tbody>
+              <tr><td><code>10h</code></td><td>8</td><td>DPCS</td><td>RGBC, shifted 12 — one color toward FC by IR0</td></tr>
+              <tr><td><code>2Ah</code></td><td>17</td><td>DPCT</td><td>RGB0 (the FIFO's oldest entry), three times</td></tr>
+              <tr><td><code>11h</code></td><td>8</td><td>INTPL</td><td>Current IR1..3 << 12 — interpolation of a vector and far color</td></tr>
+              <tr><td><code>29h</code></td><td>8</td><td>DCPL</td><td>[R·IR1, G·IR2, B·IR3] << 4</td></tr>
+              <tr><td><code>3Dh</code></td><td>5</td><td>GPF</td><td>IR × IR0 — general-purpose interpolation</td></tr>
+              <tr><td><code>3Eh</code></td><td>5</td><td>GPL</td><td>IR × IR0 + MAC — interpolation with base (fades mid-blend)</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <p>Every one of these bottoms out in the same hardware two-step, documented in the spec as "Details on MAC+(FC−MAC)*IR0": step 1 computes and stores <code>(FC<<12 − MAC) SAR (sf·12)</code> into IR with lm=0-style saturation, step 2 adds <code>IR0·IR</code> back and re-saturates with the real lm. Our <code>interpolateColor()</code> implements exactly that two-step form — an earlier one-step version produced off-by-small-amounts fog colors that the golden vectors caught.</p>
+
+        <h3>The opcode-numbering trap</h3>
+        <p>One of the strangest corners: PS1 assemblers historically wrote GTE commands with <em>fake</em> opcode numbers in bits 20–24 that the hardware ignores entirely — only bits 0–5 matter. The two numbering schemes disagree (fake 06h is DCPL, real 06h is NCLIP; fake 17h is OP, real 17h doesn't exist). Our first ticket specified commands by fake numbers and produced a dispatch table that collided with different real commands. The fix was to make the real-opcode table authoritative — <code>execute()</code> switches on bits 0–5 only — with a comment documenting the collision so the next reader doesn't re-derive it the hard way.</p>
+      </section>
+
+      <!-- ============ CH 11 ============ -->
+      <section class="chapter" id="c11">
+        <h2><span class="chnum">Chapter 11 · GTE: what breaks when it's wrong</span>Symptom Atlas</h2>
+        <hr class="rule">
+        <p>The reason the GTE got five chapters is that its failure modes are <em>diagnostic</em>. When something is missing here, the screen doesn't go black — it tells you precisely which link in the pipeline is broken. This chapter is the atlas we used while the commands were landing.</p>
+
+        <h3>Missing projection commands → static or exploded geometry</h3>
+        <p>Without RTPS/RTPT the game cannot turn object-space vertices into screen coordinates. Emulators that stub these see either nothing (vertices stay zero), frozen geometry (stale SXY FIFO), or "exploded" scenes (unscaled camera-space coordinates interpreted as screen space). Every world-space thing — the track, the car, opponents — moves through RTPS thousands of times per frame.</p>
+
+        <h3>Missing color commands → flat, black, or unlit scenes</h3>
+        <p>NCS/NCT/NCCS/NCCT/NCDS/NCDT/CC/CDP produce the per-vertex colors the GPU interpolates. Miss the LLM stage and lighting goes flat; miss the LCM stage and surfaces take the background color; miss the depth-cue tail and fog polygons turn solid far-color. A scene that renders with correct geometry but wrong shading is a color-family gap, nearly always NCDT or its tails — which is exactly what 3Xtreme showed before the last three GTE commits.</p>
+
+        <h3>Missing interpolation commands → broken fades, fog, and UI blends</h3>
+        <p>DPCS/DPCT/INTPL/DCPL/GPF/GPL drive screen fades, distance fog, and the smooth color ramps of menus and damage flashes. Games also use GPF/GPL as general fixed-point lerp units for their own animation. Missing them shows as pops instead of fades, or as animations that snap between keyframes.</p>
+
+        <h3>Missing NCLIP/AVSZ → vanished or wrongly-ordered polygons</h3>
+        <p>NCLIP is the backface test; without it (or with a sign error) either the front or the back half of every model disappears. AVSZ3/4 produce OTZ, the index into the game's ordering table; without a correct OTZ, transparent and overlapping polygons sort wrongly — water behind terrain, HUD behind sky. The GPU draws in FIFO order; the game's entire depth strategy is sorting into that table with OTZ.</p>
+
+        <h3>Wrong saturation/FLAG → geometry that's <em>almost</em> right</h3>
+        <p>The nastiest class. If MAC values saturate when they shouldn't (or IR clamps to the wrong lm bound), most vertices are fine and the outliers explode: distant geometry shreds into streaks, zoomed-in walls tear, fog flickers. If bit 31 isn't the OR of the right subsets, the game's clipping logic misfires and culls visible geometry. This is why the test suite holds the FLAG invariants over randomized inputs rather than a few golden values.</p>
+
+        <h3>Wrong divide → the zoom test</h3>
+        <p>The UNR division is deliberately <em>inexact</em> — it's a fast reciprocal, and real hardware has its specific error pattern. A perfect <code>H/SZ3</code> produces subtly different screen coordinates that accumulate over animation into visible jitter; the notorious artifact shows when the camera closes in and SZ3 gets small, where the <code>H < SZ3·2</code> overflow path saturates coordinates. Our implementation reproduces the table and the min() saturation rule rather than "improving" the math — the hardware's exact error is part of the spec.</p>
+
+        <h3>Missing timing → the Tekken-2 class of bug</h3>
+        <p><code>CFC2/MFC2</code> results arrive one instruction late on hardware; commands reading registers take 5–44 cycles during which the CPU stalls rather than reads stale data. Games written against those delays — Tekken 2 is the canonical case — fill with broken geometry when an emulator commits transfers synchronously. This is the one GTE area we have <em>not</em> finished (P2 in the ledger): our arithmetic and FIFO order are exact, register visibility is instantaneous. It's next on the GTE list.</p>
+
+        <div class="callout">
+          <span class="tag">Why "the game still runs"</span>
+          <p>The CPU can execute valid opcodes the GTE ignores — our unknown-opcode path leaves FLAG cleared and returns, and the game code proceeds. That's precisely why incomplete GTE coverage is insidious: no crash, no exception, just a scene that slowly reveals every missing link. The FLAG contract is the only error channel, and only a frame-by-frame comparison against a hardware reference surfaces the gap.</p>
+        </div>
+      </section>
+
+      <!-- ============ CH 12 ============ -->
+      <section class="chapter" id="c12">
+        <h2><span class="chnum">Chapter 12 · GTE: remaining work</span>The Short List</h2>
+        <hr class="rule">
+        <p>Where the GTE stands at the end of the build window, precisely.</p>
+
+        <h3>Done and verified</h3>
+        <ul>
+          <li>The full real-opcode table: RTPS, RTPT, NCLIP, AVSZ3/4, MVMVA (all matrix/vector/translation selectors including the garbage matrix and the buggy FC path), OP, SQR, NCS/NCT/NCCS/NCCT, NCDS/NCDT, CC, CDP, DPCS/DPCT, INTPL, DCPL, GPF, GPL;</li>
+          <li>the FLAG contract: per-bit semantics, the lm asymmetry for IR3 in RTPS, bit 31 as the chained OR, per-command clearing;</li>
+          <li>the UNR division including the exact saturation rule and 33-bit intermediates;</li>
+          <li>FIFO order for SXY (3-stage), SZ (4-stage), RGB (3-stage) with hardware saturation points;</li>
+          <li>COP2 register plumbing: MFC2/CFC2/MTC2/CTC2 and LWC2/SWC2 to all 32 data and 32 control registers.</li>
+        </ul>
+
+        <h3>Verification in place</h3>
+        <p>The GTE suite's five layers: an independent fixed-point model in BigInt fraction arithmetic cross-checking MVMVA's inner dots over randomized inputs; hand-computed exact RTPS values for zero/±1/small inputs; the FLAG invariant properties; the RTPT≡3×RTPS equality over 10,000 seeded vectors; and SXY FIFO push/read parity. Depth-cue and normal-color families each carry per-command source-selection tests (the failures an earlier draft had, pinned forever).</p>
+
+        <h3>Open</h3>
+        <ol>
+          <li><strong>Register/timing semantics</strong> — the 1-instruction CFC2/MFC2 load delay, the 2-instruction memory-transfer delay, and per-command cycle charges. Spec'd in psx-spx; test vectors exist publicly (DuckStation's gte_timing_tests). Highest priority.</li>
+          <li><strong>IRGB/ORGB conversion timing</strong> — the color-conversion shortcut registers' write-to-read visibility.</li>
+          <li><strong>Adversarial vectors</strong> — overflow at extremes, negative coordinates, back-to-back register access, the N/A opcodes' side effects (hardware "modifies similar registers than RTPS" for opcode 00h; we currently treat unknowns as no-ops, noted in code).</li>
+          <li><strong>Public test-program pass</strong> — running JaCzekanski's GTE tests and any additional hardware-captured vectors through our implementation, closing the gap between "matches our model" and "matches silicon".</li>
+        </ol>
+        <p>The honest summary: the command table is complete, the arithmetic is pinned, and the timing is idealized. Geometry in 3Xtreme transformed correctly for the first time the day CTC2 landed; the remaining distance to a frame-matches-ePSXe comparison is mostly chapters 07's P2–P5, not the GTE's math.</p>
+
+        <div class="refs">
+          <span class="tag">References</span>
+          <ul>
+            <li><a href="https://psx-spx.consoledev.net/geometrytransformationenginegte">PSX-SPX — GTE command summary (real &amp; fake opcode tables)</a></li>
+            <li><a href="https://psx-spx.consoledev.net/gtepipelinetimings">PSX-SPX — GTE pipeline timings</a></li>
+            <li><a href="https://github.com/JaCzekanski/ps1-tests">JaCzekanski — PS1 test collection (GTE tests)</a></li>
+          </ul>
+        </div>
+      </section>
+
+      <!-- ============ CH 13 ============ -->
+      <section class="chapter" id="c13">
+        <h2><span class="chnum">Chapter 13 · Sound, disc, and the frozen decade</span>The Subsystems Behind the Game</h2>
+        <hr class="rule">
+        <p>Three subsystems rarely appear in screenshots but decide whether a game <em>runs</em>: the disc chain, the sound chip, and the video decoder.</p>
+
+        <h3>The disc chain</h3>
+        <p>A game never reads "a file"; it reads sectors. The chain: an image format parser (CUE/BIN with multi-file INDEX anchoring and sync-pattern detection for raw ISO; CHD v4/v5 with its hunk map, zlib raw-DEFLATE hunks, mini self-referencing hunks, and version-dependent flat/compressed layouts; PBP; raw MDF) produces 2352-byte sectors; an ISO-9660 reader walks the directory tree over those sectors; the CDROM controller latches a sector into its buffer; and DMA channel 3 drains it into RAM — but only while the drive's data-request bit says the buffer is valid. Every layer is separately tested (34 loader tests, 23 controller tests, cross-module DMA tests), because each one has its own way of being subtly wrong.</p>
+
+        <h3>The SPU</h3>
+        <p>24 voices, each a small DSP loop: fetch an ADPCM block from sound RAM, decode with the block header's shift and filter coefficients, interpolate through the Gaussian table at the voice's pitch, shape with the four-phase ADSR envelope, mix. The 512 KiB sound RAM is another preallocated array; the data port and transfer-address register handle DMA-style uploads; an IRQ address comparator fires the SPU interrupt line for streaming games. The WebAudio sink receives fixed-size transferred buffers — bounded, never per-sample callbacks into the UI. Reverb, pitch modulation, and noise are documented skips with UNVERIFIED notes, sequenced behind the ledger's P8.</p>
+
+        <h3>The MDEC</h3>
+        <p>Full-motion video on a PS1 is a clever fraud: a JPEG-style macroblock decoder in silicon, fed by DMA channel 0, outputting raw 15-bit or 24-bit frames through channel 1 at the rate the streaming code drives. Our MDEC implements both input bitstreams (fixed-length run-level and the Sony BS variable-length front end), the AAN fast IDCT for standard quant tables and the real-matrix general path for custom ones, the YCbCr→RGB conversion with the reference constants, and the measured precision model — round-half-down output, signed-9-bit mask before saturation, so overruns decode black. STP passes through to the frame's mask bit. 41 tests including golden vectors and a full DMA decode cycle.</p>
+      </section>
+
+      <!-- ============ CH 14 ============ -->
+      <section class="chapter" id="c14">
+        <h2><span class="chnum">Chapter 14 · Why HLE instead of a BIOS</span>Booting Without the ROM</h2>
+        <hr class="rule">
+        <p>The retail BIOS is a 512 KiB copyrighted ROM. We can't ship it; users may supply their own dump, and the loader accepts one (validated to exactly 512 KiB, mapped at <code>0xBFC00000</code>, CPU reset into it — the real-BIOS path is real). But most of what games actually need from the BIOS is not code — it's <em>answers</em>. So we built both paths, and the HLE path is the default.</p>
+
+        <h3>The trampoline trick</h3>
+        <p>BIOS services are called through fixed vectors at <code>0xA0</code> (file functions), <code>0xB0</code> (system functions), and <code>0xC0</code> (I/O functions). The game sets <code>$t1</code> to the function number and jumps; the vector is expected to dispatch. Our HLE installs two-instruction trampolines there — <code>SYSCALL; JR $ra</code> — and the CPU's syscall fast path recognizes vector PCs and dispatches into <code>syscall.ts</code> with the table encoded by which vector was hit. The game believes it called the BIOS; it called us.</p>
+
+        <h3>What the shield answers</h3>
+        <ul>
+          <li><strong>Memory:</strong> <code>malloc/free</code> over a bounded kernel arena, <code>InitHeap</code>;</li>
+          <li><strong>Timers:</strong> the full <code>InitTimer/GetTimerStatus/EnableTimerIRQ/DisableTimerIRQ/RestartTimer</code> set, backed by the real RCNT module;</li>
+          <li><strong>Events:</strong> <code>OpenEvent/CloseEvent/EnableEvent/DisableEvent/TestEvent/WaitEvent/DeliverEvent</code> — a real event table whose callbacks fire when devices signal (CDROM INT classes, VBlank, DMA completion), including the mode distinction between callback events and status events;</li>
+          <li><strong>Interrupt chains:</strong> <code>SetInterruptHandler/ReturnFromException/SetDefaultExitFromException/SetCustomExitFromException</code> — the machinery from bug 7;</li>
+          <li><strong>Pads:</strong> <code>PadInit/PadGetButtons</code> writing live button state, active-low, pad2 high / pad1 low;</li>
+          <li><strong>Graphics:</strong> <code>GPU_cw</code> pushing words into the real GP0 parser; <code>LoadAndExecute</code> reading an ISO file and launching it; <code>FlushCache</code>; A-table <code>SaveState/RestoreState</code> register save/restore; <code>ChangeClearPAD/ChangeClearRCnt</code>.</li>
+        </ul>
+        <p>The rule from the TODO governs the ethics of this layer: <em>HLE failures are explicit; a stub never returns fake success solely to advance a game.</em> <code>FileOpen</code>, for instance, reports exactly what it is — unimplemented — rather than handing back a handle to nothing. That honesty is why the Nortis <code>B_open</code> stall was a <em>known limit</em> rather than a mystery: the game asked for a file through BIOS FS emulation we hadn't built, the HLE said so, and the ticket was written.</p>
+
+        <h3>Boot, end to end</h3>
+        <p><code>loadExe</code> installs the trampolines, sets the crt0 register contract the real BIOS establishes (<code>$gp</code> from the header, <code>$sp/$s8</code>, <code>$ra</code> to an exit-loop stub, <code>$r5 = −1</code> so the crt0 BLTZ preamble takes the save path), fills the unwritten stack region with the exit-loop address so never-initialized link slots return to a spin instead of crashing, enables the display the way the BIOS handoff does, and resets the CPU to the EXE's entry PC. From there, the game is on its own — which is the point.</p>
+      </section>
+
+      <!-- ============ CH 15 ============ -->
+      <section class="chapter" id="c15">
+        <h2><span class="chnum">Chapter 15 · Workers and the cycle budget</span>Keeping the Browser Honest</h2>
+        <hr class="rule">
+        <p>A browser tab is a hostile runtime for an emulator: the scheduler throttles timers, requestAnimationFrame pauses in background tabs, garbage collection stops the world, and the main thread is shared with every DOM layout. The architecture answers all four.</p>
+
+        <h3>The worker owns the machine</h3>
+        <p>The entire <code>Machine</code> lives on a dedicated Web Worker. The UI sends a small, strictly-validated protocol — boot, run, pause, reset, input, set-renderer, save/load state, memory-card operations, frame requests — and gets back responses with transferred buffers: frames as <code>ArrayBuffer</code> RGBA, audio as left/right float pairs, card images, state blobs. Zero-copy transfers, bounded queues, request IDs with timeout detection, and a restart path if the worker dies. React never holds emulator state; it subscribes to a tiny store of UI facts (lifecycle, FPS, settings) and paints canvas from the transferred frame buffers. This mirrors the reference emulator's own GPU main/soft-mt thread split — the same shape, in browser primitives.</p>
+
+        <h3>The cycle budget</h3>
+        <p>The host never asks "run one frame per RAF". It accumulates elapsed wall time and converts it to console cycles at the fixed rate of <strong>33,868.8 cycles per millisecond</strong> — the PS1's actual clock — then requests that many 20,000-cycle slices (at most 170 per run request, at most 3,386,880 cycles of catch-up after a stall). The consequences are deliberate:</p>
+        <ul>
+          <li>a 144 Hz display runs the same console speed as a 60 Hz one — game speed is decoupled from refresh;</li>
+          <li>a throttled or hidden tab catches up by a bounded 100 ms and never fast-forwards an hour of backlog;</li>
+          <li>inside each slice the ordering is fixed: pending IRQ delivery check → CPU run → joypad tick → handler dispatch → DMA → event callbacks → CDROM pump/exec → SPU mix → timers → VBlank accumulator. Deterministic across runs, which is what makes save states and checkpoint comparison possible at all.</li>
+        </ul>
+
+        <h3>Input and audio, the same discipline</h3>
+        <p>Input arrives as a coalesced, revision-numbered snapshot; the worker applies each snapshot exactly once and acknowledges by revision, and applying it never resets peripheral configuration (that bug — <code>cfdc035</code> — taught us the difference between "update button state" and "re-initialize the pad"). Audio flows through a preallocated ring sized to the maximum run batch; overflow is counted and reported as <code>droppedFrames</code> rather than allowed to grow the queue; autoplay unlock is an explicit user gesture with clear muted/running state.</p>
+      </section>
+
+      <!-- ============ CH 16 ============ -->
+      <section class="chapter" id="c16">
+        <h2><span class="chnum">Chapter 16 · Devices, priorities, interrupts</span>The Nervous System</h2>
+        <hr class="rule">
+        <p>The interrupt system is where correctness bugs disguise themselves as timing bugs. One register pair governs everything: I_STAT (status, write-zero-clear) and I_MASK, bit per device — VBlank, GPU, CDROM, DMA, timers 0–2, SIO0, SPU — and an interrupt reaches the CPU only when status AND mask are nonzero <em>and</em> the CP0 status register has interrupts enabled.</p>
+
+        <h3>Device-priority dispatch</h3>
+        <p>The day-two discovery: dispatching interrupts as a flat queue let pad-and-memory-card event service run ahead of CDROM and DMA completions, and the game's asset loads starved — repeated CD retries, truncated handler runs. The rule that fixed it (<code>ce203e9</code>, refined through <code>61e8b1e</code> and the pad-dirty refinement): <strong>when VBlank and a data device (CDROM/DMA) are both pending, the device path wins the dispatch choice; the full kernel chain walk runs only when pad-card work actually changed input or no device is pending.</strong> Device IRQ delivery stays ahead of lower-priority PadCard work, exactly as the ledger's P6 prescribes.</p>
+
+        <h3>Lines from real state, not frame counters</h3>
+        <p>Every interrupt line asserts from its device's completion condition: DMA's from the derived DICR master flag (chapter 04, bug 3), CDROM's from response/interrupt-flag registers per INT class, timers from RCNT target/overflow with one-shot vs repeat behavior, SIO0's ACK IRQ from the timed assertion edge. Nothing keys off "a frame happened". The VBlank accumulator is the one sanctioned abstraction — cycles/33.8688ms, a physical fact — and even it ticks inside handler execution so a handler that waits on the next frame doesn't deadlock.</p>
+
+        <h3>Handler state, all of it</h3>
+        <p>Entering a kernel handler snapshots registers, CP0, PC/nextPC, hi/lo, the branch-delay flag, <em>and the pending load delay slot</em> — committing the interrupted load's value for the handler without consuming it in the caller (an interrupt logically arrives after the load completed). Each nesting level gets its own stack region so nested handlers can't corrupt each other's frames, a bug we hit twice (<code>db1788f</code>, <code>f9df471</code>) before making depth part of the stack address. Exit honors <code>ReturnFromException</code> semantics: the custom-exit hook can restore a full register image the game saved, and a handler exiting that way skips the rest of the dispatch chain. Handlers are bounded at a million steps with diagnostics recording any truncation — a bounded lie, reported rather than hidden.</p>
+
+        <div class="callout gray">
+          <span class="tag">Why this matters beyond stability</span>
+          <p>Handler timing changes when input and CD DMA complete — which changes when the game's callbacks run — which changes what the player sees. Frame-accurate behavior isn't a polish item; it falls out of getting the nervous system right.</p>
+        </div>
+      </section>
+
+      <!-- ============ CH 17 ============ -->
+      <section class="chapter" id="c17">
+        <h2><span class="chnum">Chapter 17 · Save states</span>Freezing a Machine Mid-Thought</h2>
+        <hr class="rule">
+        <p>A save state is the whole machine, serialized: RAM (2 MiB), the scratchpad, the parallel port expansion, BIOS, VRAM (1 MiB of halfwords), every CPU register including the pending load-delay slot and branch-delay flag, all 64 GTE registers, the GPU's parser mid-command state (accumulated packet words and counters — because a state taken mid-polygon must resume mid-polygon), the SPU's 24 voices with decode buffers and envelope phases and the entire 512 KiB sound RAM, the CDROM's FIFOs and drive state, all 21 DMA registers with DPCR/DICR, the timers, the MDEC's block pipeline, the joypad and card protocol state, the HLE kernel's event table and interrupt chains, and the interrupt status/mask pair.</p>
+        <p>The format is versioned ("RPSX", currently version 6) with a declarative schema: typed arrays, bounded arrays, enums, nested objects. Encoding and decoding are schema-driven and the decoder validates <em>the entire input before touching live state</em> — a corrupt or wrong-version blob is rejected without modifying the running machine, with slot metadata, timestamps, and game identity stored alongside in IndexedDB.</p>
+        <p>The property that made this trustworthy: <strong>save → load → run produces identical traces and frames</strong>, tested as replay equivalence on every stateful module as it landed. The standing rule from the plan — "serialize pending queues and delayed operations, not only visible registers" — is exactly what the load-delay slot, the CDROM response queue, and the GPU's half-decoded packet represent.</p>
+      </section>
+
+      <!-- ============ CH 18 ============ -->
+      <section class="chapter" id="c18">
+        <h2><span class="chnum">Chapter 18 · The dynarec detour</span>Compiling MIPS Into WebAssembly</h2>
+        <hr class="rule">
+        <p>An interpreter is honest and slow: one decoded switch per instruction, forever. The dynarec tier compiles basic blocks — straight-line runs ending at a branch (including its delay slot), a store that might alias code, or a 64-instruction cap — into WebAssembly functions. A hand-rolled binary emitter writes the WASM module bytes directly: no toolchain, no runtime codegen beyond <code>WebAssembly.instantiate</code>.</p>
+        <p>The design constraints were semantic, not speed: <strong>parity with the interpreter on everything</strong>. The emitted code mirrors the CPU state image at fixed word offsets in an imported linear memory, executes the block in WASM locals (<code>$r0</code> constant zero), and syncs pc/nextPc/cycles back through one epilogue both taken and not-taken paths converge on. Loads and stores go through imported host callbacks so the host Memory and MMIO stay authoritative; PS1's load delay reproduces exactly (publish at the top of the next emitted instruction, or export a pending slot if the load was the block's last); the branch delay slot compiles into the same block, and the block exits after it.</p>
+        <p>Invalidation is the dynarec's eternal enemy: every bus-master RAM write (CPU stores, DMA writes) invalidates overlapping blocks; wholesale memory or saved-state replacement flushes everything. Handlers still run interpreted on purpose — their per-instruction RCNT ticking and GTE/HLE/CP0 behavior must not be coarsened to block-granular timing. And a slice that ends between a branch and its delay slot executes the slot interpreted, so a linear block can never NOP-slide past a jump target.</p>
+        <p>The verification is the acceptance criteria from the plan, unchanged: parity suites and deterministic boot checkpoints match; enabling it changes performance only, never visible behavior or save-state compatibility. It remains opt-in.</p>
+      </section>
+
+      <!-- ============ CH 19 ============ -->
+      <section class="chapter" id="c19">
+        <h2><span class="chnum">Chapter 19 · Where this goes next</span>The Road to First Release</h2>
+        <hr class="rule">
+        <p>The TODO file is a phase plan with acceptance criteria, and the release gate is unusually concrete: <strong>3Xtreme reaches its title screen and enters a real race through normal input; gameplay responds for several minutes with stable graphics and no invalid execution; display modes work at native resolution; audio works or is labeled unsupported; save-state and memory-card claims match implemented behavior; full gates green; no copyrighted assets.</strong> Only then tag a release.</p>
+        <p>The work between here and there, in the plan's own order:</p>
+        <ol>
+          <li><strong>Finish CDROM streaming semantics</strong> (1.3): ReadN/ReadS/Pause/Seek/error transitions, INT1/2/3/5 sequencing, XA filtering, multi-sector and interrupted-read tests — repeated asset loads without stale data or duplicate completions.</li>
+          <li><strong>Event/IRQ/DMA/timer interaction</strong> (1.4) and the <strong>system-wide cycle scheduler</strong> (4.2): a deterministic event queue replacing per-slice peripheral ticking, validated for long-run drift and pause/resume.</li>
+          <li><strong>GPU completeness</strong> (3.4): audit all GP0/GP1 families, add the line commands, texture windows, mask bits; golden images for observed corruption before changing raster behavior.</li>
+          <li><strong>GTE timing</strong> (ledger P2): load-delay visibility, cycle charges, IRGB/ORGB — with the public test programs as the acceptance harness.</li>
+          <li><strong>Audio accuracy</strong> (4.1): voice timing, SPU DMA events, underrun recovery during real gameplay.</li>
+          <li><strong>Analog + rumble completion</strong> (2.3), <strong>BIOS-HLE audit vs real-BIOS parity</strong> (5.3), <strong>hot-path allocation elimination</strong> (7.2), and the <strong>legal homebrew compatibility suite</strong> (8.1) so CI never needs a commercial disc.</li>
+        </ol>
+        <p>Then documentation that matches observed behavior (8.3), and the release itself (8.4). The broader ambitions — higher compatibility, a WebGPU presentation backend, performance headroom — wait behind the gate, deliberately.</p>
+        <div class="callout">
+          <span class="tag">What two days bought</span>
+          <p>A from-scratch emulator that boots a commercial PlayStation game to an animated, steerable race in a browser tab — with every subsystem tested against independent models, every limitation written down, and no line of anyone else's emulator in the tree. The remaining distance is measured in hardware behavior we can name precisely. That's what honest looks like.</p>
+        </div>
+      </section>
+
+      <!-- ============ CH 20 ============ -->
+      <section class="chapter" id="c20">
+        <h2><span class="chnum">Chapter 20 · Colophon</span>Sources and Method</h2>
+        <hr class="rule">
+        <p>This book was written from the repository itself: every subsystem description cross-checked against <code>apps/src/core/</code>, every bug against its commit and regression test, every claim in the bottleneck chapters against <code>knowledge-base/RENDERING-BOTTLENECKS.md</code>, the session notes, the TODO phase plan, and the README status matrix. The GTE chapters lean on the psx-spx GTE documentation and on DuckStation's published timing tests as references for behavior — never as source.</p>
+        <h3>Reference library</h3>
+        <ul>
+          <li><a href="https://psx-spx.consoledev.net/geometrytransformationenginegte">PSX-SPX — GTE</a> — the command tables, saturation rules, and division algorithm mirrored throughout chapter 09–12.</li>
+          <li><a href="https://psx-spx.consoledev.net/gtepipelinetimings">PSX-SPX — GTE pipeline timings</a> — per-command cycle costs.</li>
+          <li><a href="https://psx-spx.consoledev.net/graphicsprocessingunitgpu/">PSX-SPX — GPU</a> · <a href="https://psx-spx.consoledev.net/ps1/gpu/render-line-commands">render line commands</a> · <a href="http://psx-spx.consoledev.net/ps1/gpu/misc">perspective (in-)correct rendering</a> — the rasterizer and GP0 references.</li>
+          <li><a href="https://psx-spx.consoledev.net/dmachannels">PSX-SPX — DMA channels</a> · <a href="https://psx-spx.consoledev.net/interrupts">interrupts</a> · <a href="https://psx-spx.consoledev.net/timers">timers</a> · <a href="https://psx-spx.consoledev.net/soundprocessingunitspu">SPU</a> · <a href="https://psx-spx.consoledev.net/cdromdrive">CDROM drive</a>.</li>
+          <li><a href="https://github.com/JaCzekanski/ps1-tests">JaCzekanski — PS1 test collection</a> — the public conformance target for GTE and beyond.</li>
+          <li><a href="https://github.com/stenzek/duckstation/blob/master/src/core-tests/gte_timing_tests.cpp">DuckStation — GTE timing tests</a> — behavioral reference for the timing work ahead.</li>
+          <li><a href="https://www.copetti.org/writings/consoles/playstation">Copetti — PlayStation architecture</a> — rasterization and texture hardware background.</li>
+          <li><a href="https://www.breck-mckye.com/psnoobsdk-docs/chapter1/3-textures.html">Textures, TPages, and CLUTs</a> — the developer-facing view of texture pages.</li>
+          <li><a href="https://gpuweb.github.io/gpuweb/explainer">WebGPU explainer</a> · <a href="https://developer.mozilla.org/en-US/docs/Web/API/WebGPU_API">MDN WebGPU</a> — for the presentation backend that waits.</li>
+        </ul>
+        <p>In-repo companions: <code>knowledge-base/BINARY-RE-MAP.md</code> (the reference-binary evidence), <code>knowledge-base/BUILD-PLAN.md</code> (phases and low-RAM rules), <code>knowledge-base/ARCHITECTURE.md</code> (legal posture and the browser-as-engine constraint), <code>knowledge-base/SESSION-NOTES.md</code> (the delivered-vs-deferred ledger), and <code>TODO.md</code> (the acceptance-criteria plan this book ends on).</p>
+        <p class="endmark">· · ·</p>
+      </section>
+
+    </article>
+  </main>
+
+  <script>
+    // Scrollspy: highlight the sidebar entry of the chapter in view.
+    (function () {
+      var links = Array.prototype.slice.call(document.querySelectorAll("#toc a"));
+      var byId = {};
+      links.forEach(function (a) { byId[a.getAttribute("href").slice(1)] = a; });
+      var sections = Array.prototype.slice.call(document.querySelectorAll("section.chapter, header.hero"));
+      var current = null;
+      function update() {
+        var line = window.innerHeight * 0.32;
+        var best = sections[0];
+        for (var i = 0; i < sections.length; i++) {
+          if (sections[i].getBoundingClientRect().top <= line) best = sections[i];
+        }
+        var id = best ? best.id : null;
+        if (id !== current) {
+          current = id;
+          links.forEach(function (a) { a.classList.remove("active"); });
+          if (id && byId[id]) byId[id].classList.add("active");
+        }
+      }
+      var ticking = false;
+      window.addEventListener("scroll", function () {
+        if (!ticking) {
+          ticking = true;
+          requestAnimationFrame(function () { update(); ticking = false; });
+        }
+      }, { passive: true });
+      update();
+    })();
+  </script>
+</body>
+</html>
+
